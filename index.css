@@ -1,0 +1,1337 @@
+/* ==========================================================================
+ * NebulaDisk 插件样式
+ * --------------------------------------------------------------------------
+ * 全部用思源的主题变量（--b3-*），这样自动跟随亮/暗主题，
+ * 不需要自己写两套配色。
+ * ========================================================================== */
+
+/* ============================ 侧边栏文件树 ============================ */
+.nb-tree {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  overflow: hidden;
+  font-size: 13px;
+}
+
+.nb-tree-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 6px;
+  border-bottom: 1px solid var(--b3-border-color);
+  flex-shrink: 0;
+}
+
+.nb-tree-mount {
+  flex: 1;
+  min-width: 0;
+  height: 26px;
+  font-size: 12px;
+}
+
+.nb-tree-btn {
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  border: none;
+  background: transparent;
+  border-radius: var(--b3-border-radius);
+  cursor: pointer;
+  color: var(--b3-theme-on-surface);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+}
+.nb-tree-btn:hover { background: var(--b3-list-hover); }
+.nb-tree-btn svg { width: 14px; height: 14px; fill: currentColor; }
+
+.nb-tree-filter { padding: 4px 6px; }
+.nb-tree-filter input { height: 26px; font-size: 12px; }
+
+.nb-tree-banner {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 8px;
+  font-size: 12px;
+  line-height: 1.5;
+  flex-shrink: 0;
+}
+.nb-tree-banner.is-warn {
+  background: var(--b3-card-warning-background);
+  color: var(--b3-card-warning-color);
+}
+.nb-tree-banner.is-error {
+  background: var(--b3-card-error-background);
+  color: var(--b3-card-error-color);
+}
+.nb-tree-banner button { flex-shrink: 0; font-size: 11px; padding: 2px 8px; }
+
+.nb-tree-body {
+  overflow: auto;
+  padding: 2px 0 8px;
+}
+
+.nb-tree-empty {
+  padding: 18px 12px;
+  color: var(--b3-theme-on-surface-light);
+  font-size: 12px;
+  text-align: center;
+}
+
+/* ---- 节点 ---- */
+.nb-node-wrap { user-select: none; }
+
+.nb-node {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  height: 26px;
+  padding-right: 6px;
+  cursor: pointer;
+  border-radius: var(--b3-border-radius);
+  white-space: nowrap;
+  overflow: hidden;
+}
+.nb-node:hover { background: var(--b3-list-hover); }
+.nb-node.is-selected { background: var(--b3-list-hover); }
+
+.nb-node-arrow {
+  width: 14px;
+  height: 14px;
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--b3-theme-on-surface-light);
+  transition: transform 0.12s ease;
+}
+.nb-node.is-expanded > .nb-node-arrow { transform: rotate(90deg); }
+.nb-node-arrow svg { width: 11px; height: 11px; fill: currentColor; }
+
+.nb-node-icon {
+  width: 16px;
+  height: 16px;
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+/* ★ 任务29：这里原来写死 fill: var(--b3-theme-primary) + opacity:.9，
+   那是给「单色描边文件夹」用的。现在图标是**彩色 svg**（自带 fill/stroke），
+   若继续强制 fill 会把纸张底色、类型标记一起涂成主题色 ⇒ 图标糊成一团。
+   ⇒ 只对「不携带 nb-type-icon 类」的其它内联 svg（箭头、只读锁等）保留主题色。 */
+.nb-node-icon svg:not(.nb-type-icon) {
+  width: 15px;
+  height: 15px;
+  fill: var(--b3-theme-primary);
+  opacity: 0.9;
+}
+
+.nb-node-name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.nb-node-ro {
+  font-size: 10px;
+  padding: 0 4px;
+  border-radius: 3px;
+  color: var(--b3-theme-on-surface-light);
+  background: var(--b3-theme-surface-lighter);
+  flex-shrink: 0;
+}
+
+.nb-node-loading,
+.nb-node-err,
+.nb-node-empty {
+  font-size: 12px;
+  color: var(--b3-theme-on-surface-light);
+  padding: 3px 0;
+}
+
+/* ==========================================================================
+ * 任务⑳：插入嵌入块后「定位到该路径」的高亮闪烁
+ * --------------------------------------------------------------------------
+ * 只在 revealPath 里加 1.2s，用完就摘类 —— 目的是让用户**注意到**
+ * "树跳到这儿了"，否则在长列表里跳转是没有感知的。
+ * ========================================================================== */
+@keyframes nbFlash {
+  0%   { background: var(--b3-theme-primary-lightest, rgba(53, 121, 246, .28)); }
+  100% { background: transparent; }
+}
+.nb-node.nb-node-flash {
+  animation: nbFlash 1.2s ease-out 1;
+}
+
+/* ==========================================================================
+ * 任务㉑：搜索结果面板
+ * --------------------------------------------------------------------------
+ * 独立于树的一个扁平列表。搜索时树被隐藏（display:none），
+ * 两者不同时出现，用户视线只有一个焦点。
+ * ========================================================================== */
+.nb-tree-results {
+  overflow: auto;
+  padding: 2px 0 8px;
+  flex: 1;
+  min-height: 0;
+}
+
+.nb-results-head {
+  padding: 4px 8px;
+  font-size: 11px;
+  color: var(--b3-theme-on-surface-light);
+  border-bottom: 1px solid var(--b3-border-color);
+  position: sticky;
+  top: 0;
+  background: var(--b3-theme-background);
+  z-index: 2;
+}
+
+.nb-results-warn {
+  padding: 4px 8px;
+  font-size: 11px;
+  color: var(--b3-theme-on-surface);
+  background: var(--b3-card-warning-background, rgba(255, 193, 7, .18));
+}
+
+.nb-results-list { padding: 2px 0; }
+
+/* 结果行：左侧名称，右侧灰色完整目录（跨层级时靠它区分同名文件） */
+.nb-result-row { padding-left: 6px; }
+
+/*
+ * ★★★ #65：右侧路径**必须封顶**，不能把文件名挤没 ★★★
+ *
+ *   用户原话：「侧边栏文件树的搜索结果 路径显示太长了，把文件名都遮住了。」
+ *
+ *   成因（读 flex 规则即可确定，无需猜）：
+ *     .nb-node-name  flex: 1; min-width: 0        ← 可被压缩到 0
+ *     .nb-result-path margin-left:auto; flex-shrink:1; min-width:0   ← 也可被压缩
+ *   两个都是「可无限压缩」的 flex 项，于是长路径会一路吃掉 name 的宽度，
+ *   最后文件名只剩几个字符甚至被省略号吞掉 —— 而**文件名才是用户扫视的目标**，
+ *   路径只是辅助信息。
+ *
+ *   修法：给 path 一个**上限**（最多占行宽的 42%），并让它优先被压缩：
+ *     · flex-shrink 用大值（999）⇒ 空间不够时先挤 path
+ *     · max-width 42%          ⇒ 再长也只占不到一半，给 name 留出 58%
+ *     · name 保持 flex:1 且不设 flex-shrink 上限 ⇒ 拿到剩余空间
+ *   这样「短路径显示全、长路径截断，文件名始终可见」。
+ */
+.nb-result-path {
+  margin-left: auto;
+  padding-left: 8px;
+  font-size: 10px;
+  color: var(--b3-theme-on-surface-light);
+  /* ★ 上限 + 优先压缩（#65）★ */
+  max-width: 42%;
+  flex-shrink: 999;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  direction: rtl;          /* 路径过长时截掉**开头**，保住末级目录名 */
+  text-align: left;
+}
+/* 名字侧：给个下限，保证极端情况下也至少能看清开头几个字 */
+.nb-result-row .nb-node-name { min-width: 56px; }
+
+.nb-hl {
+  background: var(--b3-theme-primary-lightest, rgba(53, 121, 246, .3));
+  color: inherit;
+  border-radius: 2px;
+  padding: 0 1px;
+}
+
+/* ==========================================================================
+ * 任务㉑：网格视图
+ * ========================================================================== */
+.nb-tree-body.is-grid {
+  display: flex;
+  flex-direction: column;
+}
+
+.nb-grid-nav {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 6px;
+  border-bottom: 1px solid var(--b3-border-color);
+  flex-shrink: 0;
+}
+
+.nb-grid-up {
+  font-size: 11px;
+  padding: 1px 6px;
+  border: 1px solid var(--b3-border-color);
+  border-radius: var(--b3-border-radius);
+  background: var(--b3-theme-surface);
+  color: var(--b3-theme-on-surface);
+  cursor: pointer;
+  flex-shrink: 0;
+}
+.nb-grid-up:hover { background: var(--b3-list-hover); }
+
+.nb-grid-crumb {
+  font-size: 11px;
+  color: var(--b3-theme-on-surface-light);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  direction: rtl;          /* 同上：长路径保住末级 */
+  text-align: left;
+}
+
+.nb-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(78px, 1fr));
+  /* ★ 任务25a：固定行高 ★
+     以前没写 grid-auto-rows，默认是 auto ⇒ 配合 .nb-grid{flex:1} 撑满高度时，
+     Grid 的 align-content 默认 stretch ⇒ **每一行都被拉伸去填满整个容器**，
+     文件少的时候每个格子就占了整屏高度（用户报的「占据了整个高度」）。
+     现在：行高固定 92px + align-content:start（多出来的空间留在底部，不摊到格子上）。*/
+  grid-auto-rows: 92px;
+  align-content: start;
+  gap: 4px;
+  padding: 6px;
+  overflow: auto;
+  flex: 1;
+  min-height: 0;
+}
+
+.nb-cell {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: flex-start;
+  gap: 4px;
+  padding: 8px 4px 6px;
+  border-radius: var(--b3-border-radius);
+  cursor: pointer;
+  user-select: none;
+  min-width: 0;
+  /* ★ 任务25a：格子自身也不许被拉伸 ★
+     固定高度 + box-sizing，保证与 grid-auto-rows 一致。 */
+  height: 92px;
+  box-sizing: border-box;
+  overflow: hidden;
+}
+
+.nb-cell:hover { background: var(--b3-list-hover); }
+.nb-cell.is-selected { background: var(--b3-list-hover); }
+
+.nb-cell-icon {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  /* ★ 任务25a：图标区固定高度（不随行高浮动） */
+  height: 40px;
+  flex-shrink: 0;
+}
+/* ★ 任务29：网格里的图标整体放大到「资源管理器」那种醒目程度 */
+.nb-cell-icon .nb-type-icon { width: 34px; height: 34px; }
+
+/* ★ 任务29：目录用琥珀色实心文件夹（与网盘 Web UI 同一套画法） */
+.nb-type-icon--dir {
+  width: 22px;
+  height: 22px;
+  color: #e8a33d;
+}
+
+.nb-cell-name {
+  font-size: 11px;
+  line-height: 1.25;
+  text-align: center;
+  width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--b3-theme-on-surface);
+  flex-shrink: 0;
+}
+.nb-node-err { color: var(--b3-card-error-color); }
+
+/* ---- 文件类型图标（网盘风格彩色文档） ----
+   ★ 任务29 前：.nb-type-icon 是个带背景色的 <span>（色块 + 扩展名文字），
+     用户评价「太难看了」。现在换成**内联 svg**（白纸+折角+类型色+标记），
+     所以这里不再需要背景色/字号，只负责尺寸与对齐。
+     颜色由 svg 内部的 fill/stroke 自带（内容语义色，故意不跟主题）。 */
+.nb-type-icon {
+  display: inline-block;
+  flex-shrink: 0;
+  width: 16px;
+  height: 16px;
+  vertical-align: -2px;      /* 列表行内与文字基线对齐 */
+  overflow: visible;
+}
+.nb-type-icon svg,
+svg.nb-type-icon {
+  display: block;
+  width: 100%;
+  height: 100%;
+}
+/* 列表视图里的图标略小一点，避免撑行 */
+.nb-node-icon .nb-type-icon { width: 18px; height: 18px; vertical-align: -3px; }
+
+/* ---- 登录引导 ---- */
+.nb-tree-login {
+  padding: 16px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.nb-tree-login-title {
+  font-weight: 600;
+  font-size: 13px;
+  color: var(--b3-theme-on-background);
+}
+.nb-tree-login-desc {
+  font-size: 12px;
+  color: var(--b3-theme-on-surface-light);
+  line-height: 1.6;
+  margin-bottom: 4px;
+}
+
+/* ============================ 预览页签 ============================ */
+.nb-viewer {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  overflow: hidden;
+}
+
+.nb-viewer-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 5px 8px;
+  border-bottom: 1px solid var(--b3-border-color);
+  flex-shrink: 0;
+}
+
+.nb-viewer-title {
+  font-size: 13px;
+  font-weight: 600;
+  max-width: 46%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.nb-viewer-btn {
+  width: 26px;
+  height: 26px;
+  padding: 0;
+  border: none;
+  background: transparent;
+  border-radius: var(--b3-border-radius);
+  cursor: pointer;
+  color: var(--b3-theme-on-surface);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.nb-viewer-btn:hover { background: var(--b3-list-hover); }
+.nb-viewer-btn svg { width: 15px; height: 15px; fill: currentColor; }
+
+.nb-viewer-info {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 8px;
+  border-bottom: 1px solid var(--b3-border-color);
+  flex-shrink: 0;
+  flex-wrap: wrap;
+}
+.nb-chip {
+  font-size: 11px;
+  padding: 1px 6px;
+  border-radius: 3px;
+  background: var(--b3-theme-surface-lighter);
+  color: var(--b3-theme-on-surface-light);
+}
+
+.nb-viewer-body {
+  flex: 1;
+  overflow: auto;
+  position: relative;
+  background: var(--b3-theme-background);
+}
+
+.nb-viewer-loading {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  height: 100%;
+  color: var(--b3-theme-on-surface-light);
+  font-size: 13px;
+}
+
+.nb-spinner {
+  width: 26px;
+  height: 26px;
+  border: 2.5px solid var(--b3-border-color);
+  border-top-color: var(--b3-theme-primary);
+  border-radius: 50%;
+  animation: nb-spin 0.8s linear infinite;
+}
+@keyframes nb-spin { to { transform: rotate(360deg); } }
+
+.nb-viewer-tip {
+  padding: 5px 10px;
+  font-size: 12px;
+  color: var(--b3-theme-on-surface-light);
+  border-top: 1px solid var(--b3-border-color);
+  flex-shrink: 0;
+}
+
+/* ---- 媒体 ---- */
+.nb-media-wrap {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 100%;
+  padding: 16px;
+  box-sizing: border-box;
+}
+.nb-image {
+  max-width: 100%;
+  max-height: 100%;
+  object-fit: contain;
+  cursor: zoom-in;
+  border-radius: var(--b3-border-radius);
+  box-shadow: 0 1px 6px rgba(0, 0, 0, 0.1);
+}
+.nb-image.is-zoom {
+  max-width: none;
+  max-height: none;
+  cursor: zoom-out;
+}
+.nb-video {
+  width: 100%;
+  height: 100%;
+  max-height: 100%;
+  background: #000;
+}
+.nb-audio-wrap {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 16px;
+  height: 100%;
+}
+.nb-audio-name { font-size: 14px; font-weight: 600; }
+.nb-audio-wrap audio { width: min(420px, 80%); }
+
+/* ---- 文本 ---- */
+.nb-text {
+  margin: 0;
+  padding: 12px 14px;
+  font-family: var(--b3-font-family-code);
+  font-size: 12.5px;
+  line-height: 1.65;
+  white-space: pre-wrap;
+  word-break: break-word;
+  tab-size: 4;
+}
+.nb-hl-c { color: var(--b3-theme-on-surface-light); font-style: italic; }
+.nb-hl-s { color: #22863a; }
+.nb-hl-n { color: #005cc5; }
+.nb-hl-k { color: #d73a49; font-weight: 600; }
+
+/* ---- iframe ---- */
+.nb-iframe-wrap {
+  width: 100%;
+  height: 100%;
+  min-height: 100%;
+}
+.nb-iframe {
+  width: 100%;
+  height: 100%;
+  border: none;
+  display: block;
+  background: #fff;
+}
+
+/* ---- OnlyOffice ---- */
+.nb-oo-editor {
+  width: 100%;
+  height: 100%;
+  min-height: 100%;
+}
+/* .nb-oo-mode 已在 2026-09-22 移除：用户要求不显示「在线编辑模式 / 只读模式」提示条 */
+
+/* ---- 错误 ---- */
+.nb-viewer-error {
+  padding: 28px 22px;
+  max-width: 620px;
+  margin: 0 auto;
+}
+.nb-viewer-error-title {
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--b3-card-error-color);
+  margin-bottom: 10px;
+}
+.nb-viewer-error-msg {
+  font-family: var(--b3-font-family-code);
+  font-size: 12px;
+  line-height: 1.7;
+  white-space: pre-wrap;
+  word-break: break-word;
+  background: var(--b3-theme-surface-lighter);
+  padding: 10px 12px;
+  border-radius: var(--b3-border-radius);
+  margin: 0 0 12px;
+}
+.nb-viewer-error-hint {
+  font-size: 12px;
+  color: var(--b3-theme-on-surface-light);
+  margin-bottom: 16px;
+}
+.nb-viewer-error-actions {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+/* ============================ 笔记内嵌 ============================ */
+.nb-embed-host {
+  display: block;
+}
+
+/* ★ 任务③「嵌入块要求轻量化一些」★
+ *
+ *   轻量化体现在四处，都是「少占地方、少抢注意力」：
+ *     ① 头部收成一行、padding 收紧（原来是 6px 10px + 可能换两行）
+ *     ② 路径平时只显示文件名，**鼠标悬停**才展开完整路径
+ *        （完整路径仍然可查——它就是 title 提示，只是不再常驻占位）
+ *     ③ 按钮改成小号、次要边框，悬停才高亮
+ *     ④ 预览区不再固定 460px 高，改为「视口比例 + 上下限」，
+ *        窄窗口里不会再撑出一大块空白
+ */
+.nb-embed {
+  border: 1px solid var(--b3-border-color);
+  border-radius: var(--b3-border-radius);
+  overflow: hidden;
+  margin: 4px 0;
+  background: var(--b3-theme-background);
+  font-size: 13px;
+}
+
+.nb-embed-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 8px;
+  background: var(--b3-theme-surface-lighter);
+  border-bottom: 1px solid var(--b3-border-color);
+  /* ★ 任务26：头部必须单行，不能换行 ★
+   *
+   *   用户原话：「多了一行」。
+   *
+   *   根因：这里原来是 `flex-wrap: wrap`。当嵌入文件的路径较长时
+   *   （实测 `:/2026年08月/盛元立库/01-盛元半导体遂宁新工厂
+   *     生产厂房车间布局规划V2-2026.8.15.dwg`），
+   *   标题占满第一行之后，`.nb-embed-tools`（在页签中打开/下载/…）
+   *   被挤到**第二行**，头部高度从 27px 变成 53px ——
+   *   肉眼看到就是"凭空多了一行"。
+   *
+   *   修法：nowrap + 标题可收缩（见 .nb-embed-title 的 flex/min-width），
+   *   超长路径用省略号截断（.nb-embed-path 已是 nowrap+ellipsis）。
+   *   头部高度从此恒定为一行，不会再因路径长短变化。 */
+  flex-wrap: nowrap;
+  /* 轻量化：头部整行高度收紧 */
+  min-height: 26px;
+  box-sizing: border-box;
+}
+
+.nb-embed-title {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 12.5px;
+  font-weight: 600;
+  /* ★ 任务26：必须能收缩，否则 nowrap 下会把工具条顶出可视区 ★
+   *   flex:1 1 auto 让它吃掉剩余空间；min-width:0 允许它小于内容宽度，
+   *   配合 .nb-embed-path 的 text-overflow:ellipsis 才能真的出省略号。 */
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+}
+.nb-embed-title svg {
+  width: 15px;
+  height: 15px;
+  fill: var(--b3-theme-primary);
+  flex-shrink: 0;
+}
+.nb-embed-mount { flex-shrink: 0; max-width: 40%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.nb-embed-path {
+  color: var(--b3-theme-on-surface-light);
+  font-weight: 400;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  /* 同上：允许收缩到 0，省略号才生效 */
+  min-width: 0;
+}
+
+.nb-embed-tools {
+  margin-left: auto;
+  display: flex;
+  gap: 4px;
+  flex-shrink: 0;
+}
+/* ★ 任务③：按钮轻量化 —— 平时弱边框、悬停才变主色 ★ */
+.nb-embed-btn {
+  font-size: 11px;
+  line-height: 16px;
+  padding: 1px 7px;
+  border: 1px solid transparent;
+  background: transparent;
+  color: var(--b3-theme-on-surface-light);
+  border-radius: 3px;
+  cursor: pointer;
+  transition: background .12s, color .12s, border-color .12s;
+}
+.nb-embed-btn:hover {
+  background: var(--b3-list-hover);
+  border-color: var(--b3-border-color);
+  color: var(--b3-theme-on-surface);
+}
+/* 主操作（收起 / 在页签中打开）常显边框，次要的（下载 / 打开网盘）更淡 */
+.nb-embed-btn--collapse,
+.nb-embed-btn--primary {
+  border-color: var(--b3-border-color);
+  color: var(--b3-theme-on-surface);
+}
+
+.nb-embed-list {
+  max-height: 420px;
+  overflow: auto;
+  padding: 3px 0;
+}
+
+.nb-embed-row {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  padding: 4px 12px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.nb-embed-row:hover { background: var(--b3-list-hover); }
+.nb-embed-ico { flex-shrink: 0; font-size: 13px; }
+.nb-embed-name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.nb-embed-size {
+  font-size: 11px;
+  color: var(--b3-theme-on-surface-light);
+  flex-shrink: 0;
+}
+
+.nb-embed-loading,
+.nb-embed-error {
+  padding: 14px 12px;
+  font-size: 12px;
+  color: var(--b3-theme-on-surface-light);
+  text-align: center;
+}
+.nb-embed-error { color: var(--b3-card-error-color); }
+
+/* ★ 任务③：预览高度改为「相对视口」——
+ *   固定 460px 在矮窗口/大屏笔记本上不是太高就是太矮。
+ *   这里取视口的 58%，并夹在 300~620px 之间：
+ *     · 矮窗口 ⇒ 至少 300px，仍能看清
+ *     · 大屏    ⇒ 最多 620px，不会一块预览吃掉整屏
+ *   高度下限同时保证占位状态不会塌成一条线。
+ */
+.nb-embed-frame-box {
+  height: clamp(300px, 58vh, 620px);
+  min-height: 300px;
+}
+.nb-embed-frame {
+  width: 100%;
+  height: 100%;
+  border: none;
+  display: block;
+  background: #fff;
+}
+
+/* ============================ 选择器 ============================ */
+.nb-picker {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  font-size: 12px;         /* #64：13 → 12，整块跟着收一档 */
+}
+.nb-picker-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 5px 8px;
+  border-bottom: 1px solid var(--b3-border-color);
+  flex-shrink: 0;
+}
+.nb-picker-mount { width: 160px; height: 28px; }
+.nb-picker-path {
+  font-size: 12px;
+  color: var(--b3-theme-on-surface-light);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+/* ★ 任务24a：选择器里的搜索栏 ★ */
+.nb-picker-search {
+  padding: 5px 8px;
+  border-bottom: 1px solid var(--b3-border-color);
+  flex-shrink: 0;
+}
+.nb-picker-search .nb-picker-q { height: 26px; }   /* #64：28 → 26 */
+.nb-picker-shead {
+  padding: 3px 10px 1px;
+  font-size: 11px;
+  color: var(--b3-theme-on-surface-light);
+}
+.nb-picker-swarn {
+  margin: 2px 8px 4px;
+  padding: 3px 8px;
+  font-size: 11px;
+  border-radius: var(--b3-border-radius);
+  background: var(--b3-card-warning-background);
+  color: var(--b3-card-warning-color);
+}
+/* 搜索结果里的「所在目录」副标题 */
+.nb-picker-sub {
+  display: block;
+  font-size: 11px;
+  color: var(--b3-theme-on-surface-light);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.nb-picker-list {
+  flex: 1;
+  overflow: auto;
+  padding: 2px 0;
+}
+
+/*
+ * ★★★ #64：picker 的行要「矮而紧」★★★
+ *
+ *   用户原话：「插入嵌入块时，弹出的『选择要嵌入的文件』，
+ *             每个文件太高了，而且宽度很长。」
+ *
+ *   行高构成（改前）：padding 5px*2 + 内容行高 ≈ 每行 ~30px。
+ *   这些行是**纯文本 + 16px 图标**，没有换行内容，30px 明显偏高，
+ *   一屏能看的文件太少（对话框只有 560px 高，光列表就吃掉大半）。
+ *   ⇒ 压到 padding 2px*2 + line-height 20px ≈ 每行 24px，
+ *     一屏多显示出约 25% 的文件，且不显拥挤（icon 16px 仍是主体高度）。
+ *
+ *   宽度：那是 Dialog 的 640px（见 index.js）—— 见那边的改法。
+ */
+.nb-picker-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 2px 10px;
+  line-height: 20px;
+  cursor: pointer;
+  border-radius: var(--b3-border-radius);
+}
+.nb-picker-row:hover { background: var(--b3-list-hover); }
+.nb-picker-row.is-disabled { opacity: 0.45; cursor: default; }
+.nb-picker-row.is-disabled:hover { background: transparent; }
+.nb-picker-ico {
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  width: 16px;
+  height: 16px;
+}
+.nb-picker-ico svg { width: 15px; height: 15px; }
+.nb-picker-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.nb-picker-size { font-size: 11px; color: var(--b3-theme-on-surface-light); flex-shrink: 0; }
+
+/* ★ 任务26b：已选区（多选 + 拖动排序）★
+ *
+ *  布局：列表 fn__flex-1 占满剩余高度，已选区固定在其下方、自身可滚动。
+ *  为什么给 traybody 设 max-height 而不是让它自由长高：
+ *    选了十几个文件时，如果已选区无限长高，会把列表挤没 ⇒ 用户没法继续挑。
+ *    固定上限 + 内部滚动，列表和已选区各占一块，互不挤压。
+ */
+.nb-picker-tray {
+  flex-shrink: 0;
+  border-top: 1px solid var(--b3-border-color);
+  background: var(--b3-theme-surface-lighter);
+}
+.nb-picker-trayhead {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 5px 10px 3px;
+}
+.nb-picker-traytitle {
+  flex: 1;
+  font-size: 11px;
+  color: var(--b3-theme-on-surface-light);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.nb-picker-trayhead .nb-picker-clear {
+  font-size: 11px;
+  padding: 1px 8px;
+  line-height: 18px;
+  flex-shrink: 0;
+}
+.nb-picker-traybody {
+  max-height: 132px;
+  overflow-y: auto;
+  padding: 2px 8px 6px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.nb-picker-trayempty {
+  font-size: 11px;
+  color: var(--b3-theme-on-surface-light);
+  padding: 3px 2px 5px;
+}
+.nb-picker-chip {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  padding: 2px 4px;
+  border-radius: var(--b3-border-radius);
+  background: var(--b3-theme-background);
+  border: 1px solid var(--b3-border-color);
+  cursor: grab;
+  font-size: 12px;
+}
+.nb-picker-chip.is-dragging { opacity: 0.45; }
+.nb-picker-grip {
+  flex-shrink: 0;
+  color: var(--b3-theme-on-surface-light);
+  cursor: grab;
+  user-select: none;
+}
+.nb-picker-chipname {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.nb-picker-chipbtns { display: flex; gap: 2px; flex-shrink: 0; }
+.nb-picker-chipbtns .b3-button {
+  font-size: 11px;
+  padding: 0 5px;
+  line-height: 18px;
+  min-height: 0;
+}
+
+/* 列表里被选中的行 */
+.nb-picker-row.is-picked {
+  background: var(--b3-theme-primary-lightest);
+  box-shadow: inset 2px 0 0 var(--b3-theme-primary);
+}
+
+.nb-picker-foot {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 10px;
+  border-top: 1px solid var(--b3-border-color);
+  flex-shrink: 0;
+}
+.nb-picker-hint {
+  flex: 1;
+  font-size: 12px;
+  color: var(--b3-theme-on-surface-light);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.nb-picker-loading,
+.nb-picker-error {
+  padding: 20px;
+  text-align: center;
+  font-size: 12px;
+  color: var(--b3-theme-on-surface-light);
+}
+.nb-picker-error { color: var(--b3-card-error-color); }
+
+/* ============================ 设置面板 ============================ */
+.nb-settings {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 4px 2px;
+}
+.nb-settings-banner {
+  padding: 8px 12px;
+  border-radius: var(--b3-border-radius);
+  font-size: 12.5px;
+  line-height: 1.5;
+}
+.nb-settings-banner.is-ok {
+  background: var(--b3-card-success-background);
+  color: var(--b3-card-success-color);
+}
+.nb-settings-banner.is-warn {
+  background: var(--b3-card-warning-background);
+  color: var(--b3-card-warning-color);
+}
+.nb-setting-item {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+.nb-setting-item.nb-setting-inline {
+  flex-direction: row;
+  align-items: center;
+  justify-content: space-between;
+}
+.nb-setting-label {
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--b3-theme-on-background);
+}
+
+/* 设置项里的灰色说明文字（不参与取值，纯提示） */
+.nb-setting-hint {
+  font-size: 12px;
+  line-height: 1.6;
+  color: var(--b3-theme-on-surface);
+  opacity: 0.75;
+  margin: -2px 0 6px;
+}
+.nb-setting-actions {
+  display: flex;
+  gap: 10px;
+  padding-top: 6px;
+}
+.nb-dialog-content { display: flex; flex-direction: column; height: 100%; }
+
+
+/* ==========================================================================
+ * 嵌入块：宽度约束 + 点击预览（2026-09-22）
+ *
+ * 用户提的两个问题：
+ *   · 「横向滚动条」—— 头部一行内容（图标+网盘+长路径+按钮）撑破了块宽度，
+ *     而 .nb-embed 只写了 overflow:hidden，撑破后内容仍可能溢出到编辑区，
+ *     在较窄的窗口里表现为横向滚动 / 被裁切。
+ *     修法：把块本身约束成 width:100% + max-width:100%，头部允许换行，
+ *     路径用 ellipsis 截断；iframe 与外层都 box-sizing:border-box。
+ *   · 「不要自动加载」—— 见 src/embed.js 的 renderPlaceholder()。
+ * ========================================================================== */
+
+/* 自定义块容器本身也约束一下，避免 iframe 反推宽度 */
+.nb-embed-host,
+.custom-block[data-type=NodeCustomBlock] .protyle-wysiwyg > .nb-embed-host {
+  max-width: 100%;
+  box-sizing: border-box;
+}
+
+.nb-embed {
+  width: 100%;
+  max-width: 100%;
+  box-sizing: border-box;
+  /* 超长无空格字符串（长路径/长文件名）允许在容器内断行 */
+  overflow-wrap: anywhere;
+}
+
+.nb-embed-head {
+  /* ★ 任务26：头部已改为 nowrap（见上方主规则），这里只补充收缩所需的
+   *   min-width:0，保证整行不会被内容撑出容器。 */
+  min-width: 0;
+  box-sizing: border-box;
+}
+
+.nb-embed-title {
+  /* 关键：flex 子项默认 min-width:auto 会被长路径撑破 → 显式归零 */
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.nb-embed-path {
+  /* 长路径必须可收缩 + 截断（nowrap/ellipsis 在主规则里）,
+   * 否则 100% 会变成「按内容宽」把工具条挤到第二行。 */
+  flex: 0 1 auto;
+  max-width: 100%;
+}
+
+.nb-embed-tools { flex: 0 0 auto; }
+
+/* ★ 任务27：拖动手柄 + 落位指示线 ★
+ *
+ *  手柄只占很小一块，平时低对比度，hover 才显眼 ——
+ *  嵌入块的头是"信息条"，不该被一个把手抢了视觉重心。
+ *  cursor:grab 让鼠标形态明确提示"这里能按"。
+ */
+.nb-embed-grip {
+  flex: 0 0 auto;
+  cursor: grab;
+  user-select: none;
+  color: var(--b3-theme-on-surface-light);
+  opacity: 0.55;
+  font-size: 13px;
+  line-height: 1;
+  padding: 0 2px;
+}
+.nb-embed-grip:hover { opacity: 1; }
+.nb-embed-grip:active { cursor: grabbing; }
+.nb-embed-grip.is-dragging { cursor: grabbing; opacity: 1; }
+
+/* 被拖起来的块整体变淡，用户知道"拿着的是它" */
+.nb-embed.is-dragging { opacity: 0.5; }
+
+/* 落位指示：贴在目标块的上沿 / 下沿画一条主色线 */
+.nb-embed-drop-before,
+.nb-embed-drop-after { position: relative; }
+.nb-embed-drop-before::before,
+.nb-embed-drop-after::after {
+  content: "";
+  position: absolute;
+  left: 0;
+  right: 0;
+  height: 2px;
+  background: var(--b3-theme-primary);
+  border-radius: 1px;
+  z-index: 5;
+}
+.nb-embed-drop-before::before { top: -2px; }
+.nb-embed-drop-after::after { bottom: -2px; }
+
+/* ---- 未加载时的占位（点击预览）---- */
+.nb-embed-frame-box {
+  box-sizing: border-box;
+  width: 100%;
+  max-width: 100%;
+}
+
+.nb-embed-placeholder {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  /* 比加载后矮一些，避免空占一大块版面 */
+  min-height: 132px;
+  padding: 22px 16px;
+  box-sizing: border-box;
+}
+
+.nb-embed-play {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  padding: 7px 18px;
+  font-size: 13px;
+  font-family: inherit;
+  color: var(--b3-theme-on-primary, #fff);
+  background: var(--b3-theme-primary);
+  border: none;
+  border-radius: var(--b3-border-radius);
+  cursor: pointer;
+  transition: opacity .15s;
+}
+.nb-embed-play:hover { opacity: .86; }
+.nb-embed-play svg {
+  width: 15px;
+  height: 15px;
+  fill: currentColor;
+  flex-shrink: 0;
+}
+
+.nb-embed-placeholder-hint {
+  font-size: 11.5px;
+  color: var(--b3-theme-on-surface-light);
+}
+
+/* ---- 任务①：「收起」从浮层移到工具栏，未预览时隐藏 ---- */
+/*   旧实现是 .nb-embed-collapse 绝对定位浮在预览框右上角，
+ *   现在按钮属于 .nb-embed-tools 工具栏的一部分（第一个），
+ *   靠 JS 的 display 控制显隐，这里只补一点视觉区分。 */
+.nb-embed-btn--collapse {
+  color: var(--b3-theme-primary);
+  border-color: var(--b3-theme-primary);
+}
+
+/* ==========================================================================
+ * 任务⑧：嵌入块的「原生直出」（图片 / 视频 / 音频 / PDF / 文本）
+ * 2026-09-23
+ *
+ * 背景：embed.js 的 resolvePreviewUrl() 原先从不看 pickViewer()，
+ *       图片等一律塞进 kkFileView 的 /lite 外壳，导致嵌入块里打不开。
+ *       现在这些类型由 renderNative() 直接建 <img>/<video>/<audio>/<iframe>/<pre>。
+ *
+ * ★ 为什么必须有这段 CSS（不是可选的美化）★
+ *   没有样式时后果是**功能性的**，不只是难看：
+ *     · <img> 不设 max-width ⇒ 按**原始像素**铺开。实测用户的
+ *       jpg 是 1279×1706、bmp 是 2420×884，会把嵌入块和整篇笔记
+ *       横向撑破（就是 2026-09-22 修过的那类「横向滚动条」问题复发）。
+ *     · <video>/<audio> 不给 width ⇒ 在各浏览器里高度塌陷成 0 或巨大，
+ *       取决于 UA 默认样式。
+ *     · <pre> 不设 overflow ⇒ 长行会把块撑破，且白底黑字在深色主题下刺眼。
+ *   ⇒ 这里按「填满容器宽度 + 不超出 + 高度自适应」的规矩统一约束。
+ * ========================================================================== */
+
+/* 图片：等比缩放到底宽，绝不超出容器；点击可放大靠宿主查看器 */
+.nb-embed-image {
+  display: block;
+  max-width: 100%;
+  width: auto;
+  height: auto;
+  margin: 0 auto;
+  /* 给个上限，避免竖长图（如 1279×1706）把一屏占满还要滚很久 */
+  max-height: 72vh;
+  object-fit: contain;
+  border-radius: 3px;
+}
+
+/* 视频：占满宽度，等高比由内容决定 */
+.nb-embed-video {
+  display: block;
+  width: 100%;
+  max-width: 100%;
+  max-height: 72vh;
+  background: var(--b3-theme-background, #000);
+  border-radius: 3px;
+}
+
+/* 音频：撑满一行 + 居中，不占多余高度 */
+.nb-embed-audio-wrap {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 18px 12px;
+  box-sizing: border-box;
+}
+.nb-embed-audio-wrap audio {
+  width: 100%;
+  max-width: 520px;
+}
+
+/* PDF：iframe 直连 /api/raw，给一个稳定的可视高度 */
+.nb-embed-frame--pdf {
+  width: 100%;
+  max-width: 100%;
+  height: 68vh;
+  min-height: 360px;
+  border: 0;
+  background: var(--b3-theme-surface, #fff);
+}
+
+/* 文本：等宽 + 横向可滚 + 纵向限高，深色主题下不刺眼 */
+.nb-embed-text {
+  box-sizing: border-box;
+  width: 100%;
+  max-width: 100%;
+  max-height: 62vh;
+  margin: 0;
+  padding: 12px 14px;
+  overflow: auto;
+  /* 长行不换行、改为横向滚动 —— 看代码/日志时对齐不被破坏 */
+  white-space: pre;
+  overflow-wrap: normal;
+  font-family: var(--b3-font-family-code, ui-monospace, SFMono-Regular, Menlo, Consolas, monospace);
+  font-size: 12px;
+  line-height: 1.6;
+  tab-size: 4;
+  color: var(--b3-theme-on-surface);
+  background: var(--b3-theme-surface-lighter, var(--b3-theme-background));
+  border: 1px solid var(--b3-border-color);
+  border-radius: 3px;
+}
+
+/* ======================================================================
+ * 需求 ④：从文件树拖拽到正文
+ * ==================================================================== */
+
+/* 正在被拖的树节点：淡一点，明确「它正在被搬动」 */
+.nb-node.is-dragging {
+  opacity: .45;
+}
+
+/* ★ 落点高亮：拖拽时悬停在哪一块，哪一块就亮起来 ★
+ *   这是 HTML5 DnD 里**唯一**能让用户预知「会插到哪里」的手段，
+ *   没有它用户只能盲放，插错位置的概率极高。 */
+.nb-drop-target {
+  position: relative;
+  border-radius: 3px;
+  box-shadow: inset 0 0 0 2px var(--b3-theme-primary);
+  background: var(--b3-theme-primary-lightest, rgba(53, 120, 247, .08));
+  transition: box-shadow .1s, background .1s;
+}
+
+/* 落点提示条：贴在块的下沿，暗示「新块会插在这下面」 */
+.nb-drop-target::after {
+  content: "插入到这里";
+  position: absolute;
+  left: 6px;
+  bottom: -9px;
+  z-index: 5;
+  padding: 1px 7px;
+  font-size: 10.5px;
+  line-height: 16px;
+  color: #fff;
+  background: var(--b3-theme-primary);
+  border-radius: 8px;
+  pointer-events: none;
+  white-space: nowrap;
+}
+
+/* 树节点在拖拽期间给出「可拖」手感 */
+.nb-node[draggable="true"] { cursor: grab; }
+.nb-node[draggable="true"]:active { cursor: grabbing; }
+
+/* ★★★ 任务⑫：从系统拖文件进来上传时的「落点目录」高亮 ★★★
+ *
+ * 与上面 .nb-drop-target 的区别（故意做成两套视觉，别混用）：
+ *   · .nb-drop-target    = 树上拖到**正文**，语义是"插到这下面"（下沿一条提示）
+ *   · .nb-drop-dir       = 系统拖到**目录**，语义是"传进这个目录里"（整个框起来）
+ *
+ * 用虚线框 + 整行底色，而不是实线：用户此刻给的是**文件**，不是"插入位置"，
+ * 需要在视觉上一眼分开，避免误以为又会插一个嵌入块。 */
+.nb-drop-dir > .nb-node {
+  border-radius: 3px;
+  box-shadow: inset 0 0 0 2px var(--b3-theme-primary);
+  background: var(--b3-theme-primary-lightest, rgba(53, 120, 247, .10));
+  outline: 1px dashed var(--b3-theme-primary);
+  outline-offset: -3px;
+  transition: box-shadow .1s, background .1s;
+}
+
+/* 落点提示条：贴在行的下面，明说"会传到这个目录" */
+.nb-drop-dir {
+  position: relative;
+}
+.nb-drop-dir > .nb-node::after {
+  content: "上传到此目录";
+  position: absolute;
+  left: 6px;
+  bottom: -9px;
+  z-index: 5;
+  padding: 1px 7px;
+  font-size: 10.5px;
+  line-height: 16px;
+  color: #fff;
+  background: var(--b3-theme-primary);
+  border-radius: 8px;
+  pointer-events: none;
+  white-space: nowrap;
+}

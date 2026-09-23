@@ -1,0 +1,32 @@
+# ---- 本地敏感配置（绝不入库）----
+# 部署口令。仓库里只保留 .nb-local.json.example
+tools/.nb-local.json
+.env
+.env.local
+*.secret
+*.pem
+*.key
+id_rsa*
+id_ed25519*
+
+# ---- 依赖与缓存 ----
+node_modules/
+__pycache__/
+*.pyc
+.cache/
+
+# ---- 编辑器 / 系统 ----
+.idea/
+.vscode/
+*.iml
+.DS_Store
+Thumbs.db
+
+# ---- 运行期日志与临时文件 ----
+*.log
+temp/
+
+# ⚠️ 注意：dist/ **故意入库**，不要加进来。
+#   根目录的 index.js 是 **ESM** 源码入口（import "./src/*.js"），
+#   思源只认 CommonJS 单文件，所以真正可安装的是 dist/index.js（build.js 的产物）。
+#   保留 dist/ 才能「clone 下来即可安装」。

@@ -1,0 +1,42 @@
+{
+  "name": "siyuan-nebuladisk",
+  "author": "zhangtao",
+  "url": "",
+  "version": "1.0.1",
+  "minAppVersion": "3.0.0",
+  "backends": [
+    "windows",
+    "linux",
+    "darwin",
+    "docker"
+  ],
+  "frontends": [
+    "desktop",
+    "desktop-window",
+    "browser-desktop"
+  ],
+  "disabledInPublish": true,
+  "displayName": {
+    "default": "NebulaDisk Cloud Drive",
+    "zh_CN": "NebulaDisk 网盘"
+  },
+  "description": {
+    "default": "Browse, preview and edit your NebulaDisk cloud drive files inside SiYuan: sidebar file tree, online preview & editing, embedded file tree / file pages in notes, and open-in-browser with per-type rendering.",
+    "zh_CN": "在思源笔记中直接浏览、预览和编辑 NebulaDisk 网盘：侧边栏文件树、在线预览与编辑、笔记内嵌文件树或文件页面，以及按类型渲染的「在浏览器中打开」。"
+  },
+  "readme": {
+    "default": "README.md",
+    "zh_CN": "README.zh_CN.md"
+  },
+  "icon": "icon.png",
+  "keywords": [
+    "nebuladisk",
+    "网盘",
+    "cloud",
+    "云盘",
+    "kkfileview",
+    "onlyoffice",
+    "cad",
+    "file"
+  ]
+}

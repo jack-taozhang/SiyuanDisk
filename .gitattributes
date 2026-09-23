@@ -1,0 +1,18 @@
+# 统一换行符为 LF。
+# 本项目的产物同时跑在 Windows 桌面端思源与 **Linux Docker 思源**上；
+# 若按 core.autocrlf 转成 CRLF，Linux 侧的 shell/脚本会出各种诡异问题
+# （真实踩过：`set: pipefail: invalid option name`）。
+* text=auto eol=lf
+
+# 二进制文件不要做任何转换
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.ico binary
+*.woff binary
+*.woff2 binary
+*.ttf binary
+*.zip binary
+*.gz binary
+*.tar binary

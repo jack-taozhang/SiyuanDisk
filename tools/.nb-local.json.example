@@ -1,0 +1,6 @@
+{
+  "_comment": "把本文件复制成 .nb-local.json 并填入你的口令。.nb-local.json 已被 .gitignore 排除，不会提交。",
+  "user": "tao_zhang",
+  "host": "172.16.30.128",
+  "pass": "在这里填你的部署口令"
+}
