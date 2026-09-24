@@ -6,11 +6,12 @@ import {
   Dialog,
 } from "siyuan";
 
-import { API, setUnauthorizedHandler, displayMountPath } from "./src/api.js";
+import { API, setUnauthorizedHandler, displayMountPath, pickViewer } from "./src/api.js";
 import { CUSTOM_ICONS, typeIconEl, extOf } from "./src/icons.js";
 import { FileTree } from "./src/tree.js";
 import { Viewer } from "./src/viewer.js";
 import { registerEmbed, bindPluginApi, migrateLegacyEmbeds, buildEmbedMarkdown, findLegacyFenceBlocks, findParagraphFences, insertEmbedIntoDoc, collapseAllOpenEmbeds } from "./src/embed.js";
+import { createExternalContract } from "./src/external.js";
 import { NebulaProxy, HAS_NODE, setDiagFile, diag, dirExists, pickWorkspace, normPath, probeProxyPort } from "./src/proxy.js";
 /* ==========================================================================
  * NebulaDisk 网盘 —— 思源笔记插件
@@ -335,6 +336,28 @@ export default class NebulaDiskPlugin extends Plugin {
       // 0.1) 暴露给 src/ 下的模块使用（viewer 需要读网盘地址等设置）
       window.__nebuladiskPlugin = this;
 
+      // 0.2) 挂载对外能力契约 `external`（F-201 定稿，2026-09-24）
+      //
+      //   ★ 用途 ★ 让「其它插件」能消费网盘能力，而**网盘不认识任何消费方**。
+      //     · 契约只描述「我能做什么」：list / stat / search / viewerKind /
+      //       预览地址构造 / 健康检查
+      //     · 绝不描述「谁在调我」—— 这里不出现 canvas / 画布 之类的词（C-5）
+      //     · URL 一律由网盘侧构造（C-4）：后端可能是容器内名（nebula:8088），
+      //       必须经 browserReachableUrl() 改写成浏览器可达地址；
+      //       消费方自己拼必然踩这个坑，所以干脆不暴露地址拼接能力。
+      //     · 方法**不抛异常**穿过边界，统一返回 `{ok, data|error, reason}`；
+      //       reason 严格区分 missing(404) / denied(403) / unreachable(网络)
+      //       —— 否则消费方会把「网盘暂时连不上」误报成「文件被删了」。
+      //
+      //   为什么是「冻结」的：契约一旦挂出就是公开接口，防止被运行时改写。
+      try {
+        this.external = createExternalContract({ API, pickViewer, diag });
+        diag("[external] 对外契约已挂载（version=" + this.external.version + "）");
+      } catch (e) {
+        // 契约挂载失败不能阻断插件自身启动 —— 画布那边会优雅降级
+        diag("[external] 契约挂载失败：" + (e && e.message));
+      }
+
       // 1) 载入设置（要先于代理启动，因为代理需要 serverUrl/port）
       await step("loadSettings", () => this.loadSettings());
 
@@ -573,6 +596,13 @@ export default class NebulaDiskPlugin extends Plugin {
       this.boot = null;
     }
     if (window.__nebuladiskPlugin === this) {
+      // ★ 必须连 external 一起清 ★
+      //   契约是挂在实例上的，但消费方（画布等）探测的是
+      //   `window.__nebuladiskPlugin.external`。只删单例而留实例引用，
+      //   消费方手上那个陈旧引用仍能调到已卸载插件的 API ⇒ 幽灵请求。
+      try {
+        if (this.external) this.external = null;
+      } catch { /* 冻结对象可能拒绝写入，忽略 */ }
       delete window.__nebuladiskPlugin;
     }
     console.log("[nebuladisk] 已卸载");

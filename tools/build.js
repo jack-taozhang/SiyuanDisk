@@ -67,6 +67,7 @@ const ENTRY = "index.js";
 const MODULES = [
   "src/proxy.js",
   "src/api.js",
+  "src/external.js",
   "src/icons.js",
   "src/tree.js",
   "src/viewer.js",
