@@ -131,6 +131,75 @@ export function createExternalContract({ API, pickViewer, diag } = {}) {
       }, "search"),
 
     // ──────────────────────────────────────────────
+    // 写操作（F-300 新增：让消费方能重命名 / 删除 / 新建文件夹）
+    // ──────────────────────────────────────────────
+    //
+    // ★ 为什么写操作也要走契约，而不是让消费方直连后端 API ★
+    //   后端端点路径（`/api/mkdir` 等）、参数名（`path` 是父目录还是自身）、
+    //   鉴权头、容器内主机名改写 —— 全是网盘的**内部知识**。
+    //   一旦消费方直连，网盘改端点就会静默破坏所有消费方（C-4 同理）。
+    //
+    // ★ 这些方法的语义对**所有**消费方成立，不含画布概念（C-5）★
+    //   它们是通用文件操作：新建目录、改名、删除、移动。
+
+    /**
+     * 新建目录。
+     * @param {string} mount 挂载点
+     * @param {string} path  **父目录**路径
+     * @param {string} name  新目录名（单段，不含 `/`）
+     */
+    mkdir: (mount, path, name) =>
+      guard(async () => {
+        const r = await API.mkdir(String(mount || ""), String(path || "/"), String(name || ""));
+        return r || null;
+      }, "mkdir"),
+
+    /**
+     * 重命名（文件或目录）。
+     * @param {string} mount
+     * @param {string} path  被重命名对象的**完整路径**
+     * @param {string} name  新名称（单段，不含 `/`）
+     */
+    rename: (mount, path, name) =>
+      guard(async () => {
+        const r = await API.rename(String(mount || ""), String(path || ""), String(name || ""));
+        return r || null;
+      }, "rename"),
+
+    /**
+     * 删除（文件或目录）。
+     *
+     * ⚠️ 目录删除通常是**递归**的（后端语义）。消费方必须自行做二次确认 ——
+     *    契约层不做确认 UI（那是消费方的事），但这里是「危险操作」这件事
+     *    会通过返回值如实反映，不做静默吞并。
+     * @param {string} mount
+     * @param {string} path
+     */
+    remove: (mount, path) =>
+      guard(async () => {
+        const r = await API.remove(String(mount || ""), String(path || ""));
+        return r || null;
+      }, "remove"),
+
+    /**
+     * 移动 / 复制。
+     * @param {string} mount
+     * @param {string} path    源路径
+     * @param {string} target  **目标目录**路径
+     * @param {boolean} isMove true=移动，false=复制
+     */
+    move: (mount, path, target, isMove = true) =>
+      guard(async () => {
+        const r = await API.move(
+          String(mount || ""),
+          String(path || ""),
+          String(target || "/"),
+          !!isMove,
+        );
+        return r || null;
+      }, "move"),
+
+    // ──────────────────────────────────────────────
     // 类型分流（消费方据此决定怎么渲染）
     // ──────────────────────────────────────────────
 

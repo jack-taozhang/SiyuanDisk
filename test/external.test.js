@@ -56,6 +56,10 @@ function makeApi(overrides = {}) {
     browserViewUrl: () => "http://172.16.30.128:8089/view?x",
     signedRawUrl: async () => "http://172.16.30.128:8089/api/raw?t=x",
     downloadUrl: () => "http://172.16.30.128:8089/api/download?x",
+    mkdir: async () => ({ ok: true }),
+    rename: async () => ({ ok: true }),
+    remove: async () => ({ ok: true }),
+    move: async () => ({ ok: true }),
     ooHealth: async () => ({ ok: true }),
     kkHealth: async () => ({ ok: true }),
     cadHealth: async () => ({ ok: true }),
@@ -127,6 +131,8 @@ async function main() {
     for (const m of [
       "listMounts", "list", "stat", "search", "viewerKind",
       "previewUrl", "cadUrl", "webUrl", "signedRawUrl", "downloadUrl", "health",
+      // F-300 新增写操作（让消费方能新建/改名/删除/移动）
+      "mkdir", "rename", "remove", "move",
     ]) {
       assert.strictEqual(typeof contract[m], "function", `缺少方法 ${m}`);
     }
@@ -265,6 +271,7 @@ async function main() {
       API: makeApi({
         me: boom, list: boom, stat: boom, search: boom,
         previewUrl: boom, cadUrl: boom, signedRawUrl: boom,
+        mkdir: boom, rename: boom, remove: boom, move: boom,
       }),
       pickViewer: stubPickViewer,
     });
@@ -272,12 +279,82 @@ async function main() {
       () => c.listMounts(), () => c.list("m", "/"), () => c.stat("m", "/x"),
       () => c.search("m", "q"), () => c.previewUrl("m", "/x"),
       () => c.cadUrl("m", "/x"), () => c.signedRawUrl("m", "/x"),
+      () => c.mkdir("m", "/d", "n"), () => c.rename("m", "/x", "y"),
+      () => c.remove("m", "/x"), () => c.move("m", "/x", "/d"),
     ];
     for (const run of calls) {
       const r = await run();
       assert.strictEqual(r.ok, false, "应返回 ok:false 而不是抛异常");
       assert.ok(typeof r.error === "string");
     }
+  });
+
+  console.log("\n[external] 写操作（F-300）");
+
+  await test("mkdir 把 name 与父目录原样透传给 API", async () => {
+    const seen = {};
+    const c = createExternalContract({
+      API: makeApi({ mkdir: async (mount, path, name) => { Object.assign(seen, { mount, path, name }); return { ok: true }; } }),
+      pickViewer: stubPickViewer,
+    });
+    const r = await c.mkdir("研发立项", "/合同", "2026");
+    assert.strictEqual(r.ok, true);
+    assert.deepStrictEqual(plain(seen), { mount: "研发立项", path: "/合同", name: "2026" });
+  });
+
+  await test("rename 把「完整路径 + 新名」透传（name 是单段，不是路径）", async () => {
+    const seen = {};
+    const c = createExternalContract({
+      API: makeApi({ rename: async (mount, path, name) => { Object.assign(seen, { mount, path, name }); return { ok: true }; } }),
+      pickViewer: stubPickViewer,
+    });
+    await c.rename("研发立项", "/合同/a.pdf", "b.pdf");
+    assert.deepStrictEqual(plain(seen), { mount: "研发立项", path: "/合同/a.pdf", name: "b.pdf" });
+  });
+
+  await test("remove 只传 mount + path", async () => {
+    const seen = {};
+    const c = createExternalContract({
+      API: makeApi({ remove: async (mount, path) => { Object.assign(seen, { mount, path }); return { ok: true }; } }),
+      pickViewer: stubPickViewer,
+    });
+    await c.remove("研发立项", "/合同/a.pdf");
+    assert.deepStrictEqual(plain(seen), { mount: "研发立项", path: "/合同/a.pdf" });
+  });
+
+  await test("move 默认 isMove=true，显式 false 时透传为复制", async () => {
+    const seen = [];
+    const c = createExternalContract({
+      API: makeApi({ move: async (mount, path, target, isMove) => { seen.push(isMove); return { ok: true }; } }),
+      pickViewer: stubPickViewer,
+    });
+    await c.move("m", "/x", "/d");
+    await c.move("m", "/x", "/d", false);
+    assert.deepStrictEqual(seen, [true, false]);
+  });
+
+  await test("契约层不做名称校验（校验是消费方的责任，契约只透传）", async () => {
+    // ★ 设计说明：契约是「通用资料层」，不该替消费方决定什么名字合法；
+    //   但**消费方必须校验**（见画布侧 nebula-write.ts 的 sanitizeNebulaName）。
+    //   这里断言「透传」这一契约行为，防止未来有人把业务规则塞进契约。
+    const seen = {};
+    const c = createExternalContract({
+      API: makeApi({ rename: async (mount, path, name) => { Object.assign(seen, { name }); return { ok: true }; } }),
+      pickViewer: stubPickViewer,
+    });
+    await c.rename("m", "/x", "任意 名字.pdf");
+    assert.strictEqual(seen.name, "任意 名字.pdf");
+  });
+
+  await test("写操作失败同样收敛成 {ok:false, reason}（不抛异常）", async () => {
+    const c = createExternalContract({
+      API: makeApi({ remove: async () => { throw apiError(403, "denied"); } }),
+      pickViewer: stubPickViewer,
+    });
+    const r = await c.remove("m", "/x");
+    assert.strictEqual(r.ok, false);
+    assert.strictEqual(r.reason, "denied");
+    assert.strictEqual(r.status, 403);
   });
 
   console.log("\n[external] ★ 通用性（C-5：网盘不认识画布）★");
