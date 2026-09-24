@@ -7833,8 +7833,6 @@ const __mod_viewer = (() => {
   const humanSize = __mod_api.humanSize;
   const humanTime = __mod_api.humanTime;
   const decodeSmart = __mod_api.decodeSmart;
-  const serverBase = __mod_api.serverBase;
-  const liteUrl = __mod_api.liteUrl;
   const displayMountPath = __mod_api.displayMountPath;
   const insertEmbedIntoDoc = __mod_embed.insertEmbedIntoDoc;
   /* ==========================================================================
@@ -7881,6 +7879,12 @@ const __mod_viewer = (() => {
    *   （检查器本身也已在同一次修复中改为「先剥注释再解析」，双保险。）
    */
 
+  /*
+   * ★ 2026-09-24：`serverBase` / `liteUrl` 已从 import 里移除 ★
+   *   页签 CAD 改为直连 cad-viewer 深链（需求：页签显示完整工具栏），
+   *   /lite 外壳只留给嵌入块（embed.js）。test/syntax.check.js 的检查④
+   *   会把「导入了但从未使用」刷红，所以必须真的删掉这两个名字。
+   */
   /*
    * ★ #62：`webDiskUrl` 已从 import 里移除 ★
    *   viewer.openInBrowser() 原先的「退回网盘深链/首页」两条兜底已删除
@@ -8275,21 +8279,17 @@ const __mod_viewer = (() => {
         }
         throw e;
       }
-      // ★ 任务31：CAD 查看器自带整套 UI（功能区/命令行/状态栏/右上角箭头工具条/右侧工具栏），
-      //   而它**不认任何 URL 参数**控制显示设置（已核实：设置存在模块内的 Il.instance.settings，
-      //   页面拿不到；左下角坐标轴更是画在 canvas 上，CSS 也藏不掉）。
-      //   所以统一走 /lite 外壳页注入隐藏 CSS —— 与嵌入块同一条通道，行为一致。
-      //   拿不到 /lite（老后端）就退回直连，功能可用、只是收不掉菜单。
-      const raw = String(r && r.url || "");
-      let url = raw;
-      try {
-        const lite = raw ? liteUrl(serverBase(), raw, "cad") : "";
-        if (lite) url = lite;
-        else console.log("[nebuladisk] [viewer] /lite 不可用，CAD 直连预览（菜单栏不会收起）");
-      } catch (e) {
-        console.warn("[nebuladisk] [viewer] liteUrl 失败，CAD 直连：" + (e && e.message));
-      }
-      this.renderIframe(url, "CAD 图纸");
+      // ★ 2026-09-24 需求修订：**页签**打开 CAD 要显示完整工具栏 ★
+      //
+      //   曾经这里也套 /lite?kind=cad（与嵌入块同一条通道），导致页签里
+      //   工具栏/命令行/状态栏全被 CSS 藏掉 —— 与「页签 = 完整视图」矛盾。
+      //   /lite 只做 CSS 隐藏、不写 localStorage，所以页签直连即可恢复，
+      //   与嵌入块（/lite 收菜单）互不影响。
+      //
+      //   行为对齐表（保持不变的部分）：
+      //     · 嵌入块（embed.js）   → /lite?kind=cad，收掉工具栏
+      //     · 页签（本函数）       → 直连 cad-viewer 深链，完整 UI
+      this.renderIframe(r.url, "CAD 图纸");
     }
 
     /* ---- ④ kkFileView ---- */

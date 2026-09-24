@@ -51,7 +51,17 @@ const env = Object.assign({}, process.env, {
   DISPLAY: "localhost:0",
 });
 
-const r = spawnSync(sshExe, args, { env, encoding: "utf8", windowsHide: true });
+// ★ maxBuffer 必须显式给大 ★
+//   spawnSync 默认只有 1MB。拉文件（_pull-bin.cjs）时会**静默截断**：
+//   退出码 0、stderr 干净、base64 长度看着正常，只是尾部没了 ——
+//   解出来的文件比远端小一截，而且很难发现。
+//   实测：cad-viewer-BAlsMkgn.js 1820527B 被截到 774200B。
+const r = spawnSync(sshExe, args, {
+  env,
+  encoding: "utf8",
+  windowsHide: true,
+  maxBuffer: 256 * 1024 * 1024,
+});
 if (r.stdout) process.stdout.write(r.stdout);
 if (r.stderr) {
   const err = String(r.stderr)

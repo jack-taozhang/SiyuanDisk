@@ -26,6 +26,19 @@ Thumbs.db
 *.log
 temp/
 
+# ---- 排查工具的一次性产物（真件是 *.cjs 探针本体，结果文件不入库）----
+#   _*.txt   探针/校验的输出报告（_inspect.txt、_restart.txt、_deploy.txt …）
+#   _*.html  抓下来的线上页面快照（_lite-cad-live.html …）
+#   _*.png   真机截图证据
+#   _nas-src/  从容器拉回来的第三方 bundle/源码（体积大、且 compose 里含真实 secret）
+#   _oo-live/  OnlyOffice 现场抓取物
+_*.txt
+_*.html
+_*.png
+tools/_nas-src/
+tools/_oo-live/
+tools/_probe/_page/
+
 # ⚠️ 注意：dist/ **故意入库**，不要加进来。
 #   根目录的 index.js 是 **ESM** 源码入口（import "./src/*.js"），
 #   思源只认 CommonJS 单文件，所以真正可安装的是 dist/index.js（build.js 的产物）。

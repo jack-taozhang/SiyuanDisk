@@ -1,17 +1,23 @@
-/* verify-lite-cad.cjs — 任务31(rev)：/lite CAD 播种的契约测试
+/* verify-lite-cad.cjs — /lite CAD「嵌入块收 UI」的契约测试（v6：纯 CSS）
  *
- * ★ 背景：CAD 查看器的显示开关（性能面板/命令行/图元信息/功能区/工具栏/
- *   右上箭头/坐标）**不是**用 CSS 藏的，而是在 /lite 外壳页里
- *   往 localStorage["mlightcad.settings.cad-viewer"] 播种，
- *   查看器加载时自己按设置不渲染。
+ * ★ 背景（含一次真实返工，别再走回头路）★
+ *   v4/v5 用「往 localStorage["mlightcad.settings.cad-viewer"] 播种
+ *   isShowXxx=false，让查看器自己不渲染那几块 UI」。
+ *   功能上生效，但 /lite 与 /cad/ **同源**（都是 :8089），
+ *   localStorage 是 per-origin 的 ⇒ 播种会污染「页签直连」和
+ *   「浏览器直连」的 /cad/，让它们也变成被收掉的样子（且持久化）。
+ *   用户诉求是「嵌入块收 UI、页签保持完整」⇒ 播种天然做不到该区分。
+ *
+ * ✅ v6 定稿：只做 **CSS 注入**（注入到 iframe 文档内部，天然按实例隔离），
+ *    完全不再碰 localStorage。
  *
  * ★ 这份测试只读**后端源码**（tools/ref/pages.patched.py），不碰网络。
- *   它锁住四件事，每一件都对应一个会被改坏的地方：
- *     A. storageKey 必须与查看器 bundle 里 Qe.configure 的完全一致
- *     B. _LITE_CAD_SETTINGS 必须覆盖用户点名的那几项（且都是 False）
- *     C. 播种 <script> 必须出现在 <iframe> **之前**（顺序是功能前提）
- *     D. _LITE_HIDE["cad"] 里**不能**有笼统的 [class*='status-bar']（会把
- *        布局页签一起藏掉）；并且 marker 要能反映当前版本
+ *   它锁住五件事，每一件都对应一个会被改坏的地方：
+ *     A. 绝不能出现 localStorage 写入（这是上一版的回归根因）
+ *     B. _LITE_HIDE["cad"] 必须覆盖用户点名的五块 UI
+ *     C. <iframe> 必须出现在收 UI 的 <script> **之前**（否则脚本拿到 null）
+ *     D. 状态栏必须**整条**藏（含布局页签），且不能只藏右半
+ *     E. marker 版本号要能反映当前实现
  */
 const fs = require("fs");
 const path = require("path");
@@ -34,7 +40,28 @@ const check = (name, fn) => {
   catch (e) { console.log("  ❌ " + name + "\n       " + e.message); fail++; }
 };
 
-console.log("【任务31(rev)：/lite CAD 播种契约】");
+/** 取出 _LITE_HIDE["cad"] 这一段（含注释），用于选择器断言 */
+function cadSegment() {
+  const start = SRC.search(/["']cad["']\s*:\s*\[/);
+  assert.ok(start >= 0, "_LITE_HIDE 里没有 cad 段");
+  let i = SRC.indexOf("[", start), depth = 0, end = -1;
+  for (; i < SRC.length; i++) {
+    if (SRC[i] === "[") depth++;
+    else if (SRC[i] === "]") { depth--; if (depth === 0) { end = i; break; } }
+  }
+  assert.ok(end > start, "cad 段的 ] 没找到（括号不配对？）");
+  return SRC.slice(start, end + 1);
+}
+
+/** 只取 /lite 外壳页的 Python 源码区（BEGIN..END 之间），避免误判其它路由 */
+function liteSection() {
+  const a = SRC.indexOf("===== LITE SHELL");
+  assert.ok(a >= 0, "找不到 LITE SHELL 区块标记");
+  const b = SRC.indexOf("===== LITE SHELL", a + 10);
+  return SRC.slice(a, b > 0 ? b : SRC.length);
+}
+
+console.log("【/lite CAD 契约（v6 纯 CSS，禁播种）】");
 
 if (!SRC) {
   console.log("  ⚠️ 未找到参考文件（tools/ref/pages.patched.py）—— 跳过");
@@ -43,79 +70,79 @@ if (!SRC) {
 }
 console.log("  · 使用参考文件：" + path.relative(ROOT, USED));
 
-check("A storageKey 与查看器 bundle 里的 Qe.configure 一致", () => {
-  assert.ok(/mlightcad\.settings\.cad-viewer/.test(SRC),
-    "pages.py 里没有 mlightcad.settings.cad-viewer —— 播种会写到错的键上，等于没播种");
-  // 这个字符串是**实测**从 assets/main-CoLbfQ3X.js 里读出来的，不能改成别的
-  const m = /_LITE_CAD_STORAGE_KEY\s*=\s*"([^"]+)"/.exec(SRC);
-  assert.ok(m, "缺 _LITE_CAD_STORAGE_KEY 常量");
-  assert.strictEqual(m[1], "mlightcad.settings.cad-viewer",
-    `storageKey 被改成 "${m[1]}" —— 查看器只认 mlightcad.settings.cad-viewer`);
+check("A /lite 里绝不能出现 localStorage 写入（v4/v5 的回归根因）", () => {
+  const lite = liteSection();
+  // ★ 允许注释里提到 localStorage（说明为什么废弃），但不允许真的写入。
+  //   判据要收紧到「代码形式」：setItem / removeItem / localStorage[...] = 。
+  const writes = [
+    /localStorage\s*\.\s*setItem/,
+    /localStorage\s*\.\s*removeItem/,
+    /localStorage\s*\[[^\]]+\]\s*=/,
+    /_LITE_CAD_SETTINGS/,
+    /_LITE_CAD_STORAGE_KEY/,
+    /__NB_SEED_CAD_JS/,
+    /__nbSeedCad/,
+  ];
+  for (const re of writes) {
+    assert.ok(!re.test(lite),
+      `LITE 区块里仍有 localStorage 写入痕迹 ${re} —— ` +
+      `/lite 与 /cad/ 同源，会把页签/浏览器直连的 CAD 一起改掉（用户已报过一次）`);
+  }
+  // 反向确认：CSS 注入这条路径必须在
+  assert.ok(/nb-lite-css/.test(lite), "缺少 iframe 内 CSS 注入（nb-lite-css）—— 收 UI 靠什么？");
 });
 
-check("B _LITE_CAD_SETTINGS 覆盖用户点名的项，且全部为 False", () => {
-  const block = (/_LITE_CAD_SETTINGS\s*=\s*\{[\s\S]*?\n\}/.exec(SRC) || [])[0];
-  assert.ok(block, "缺 _LITE_CAD_SETTINGS 字典");
-  // 用户原话点名的：性能面板(FPS)、命令行、图元信息；外加箭头/工具条/功能区
-  const must = ["isShowStats", "isShowCommandLine", "isShowEntityInfo",
-                "isShowRibbon", "isShowToolbar", "isShowShortCutToolbar", "isShowCoordinate"];
-  for (const k of must) {
-    const re = new RegExp(`"${k}"\\s*:\\s*(True|False)`);
-    const m = re.exec(block);
-    assert.ok(m, `_LITE_CAD_SETTINGS 缺少 ${k}`);
-    assert.strictEqual(m[1], "False", `${k} 必须是 False，实际 ${m[1]}`);
+check("B _LITE_HIDE['cad'] 覆盖用户点名的五块 UI", () => {
+  const seg = cadSegment();
+  const must = [
+    ["命令行",        /\.ml-cli-container|\[class\*=['"]ml-cli['"]\]/],
+    ["顶部功能区",     /\.ml-ribbon\b|\[class\*=['"]ml-ribbon['"]\]/],
+    ["右侧垂直工具栏",  /\.ml-ex-ui-toolbar\b/],
+    ["右上角箭头",     /\.ml-ui-shortcut-toolbar-shell\b/],
+    ["底部状态栏",     /\.ml-status-bar\b|\[class\*=['"]ml-status-bar['"]\]/],
+  ];
+  for (const [name, re] of must) {
+    assert.ok(re.test(seg), `cad 段缺少「${name}」的选择器 → 嵌入块里它会露出来`);
   }
+  // v2 的坑：引擎层的 class 是 ml-ex-*，笼统的 ml-ui-toolbar 匹配不到
+  assert.ok(/\.ml-ex-ui-toolbar/.test(seg),
+    "缺少 .ml-ex-ui-toolbar（引擎层右侧工具条的真实 class；[class*='ml-ui-toolbar'] 匹配不到它）");
 });
 
-check("C 播种 <script> 出现在 <iframe> 之前（顺序是功能前提）", () => {
-  // 找页面拼装处：iframe 标签与 __NB_SEED_CAD_JS / __nbSeedCad 的注入
-  const iframeIdx = SRC.indexOf("<iframe");
-  assert.ok(iframeIdx > 0, "pages.py 里找不到 <iframe（/lite 的查看器容器）");
-  // 播种调用的注入点：找把 __NB_SEED_CAD_JS 插进页面的地方
-  const seedIdx = SRC.indexOf("__NB_SEED_CAD_JS");
-  assert.ok(seedIdx > 0, "pages.py 里没用上 __NB_SEED_CAD_JS —— 没有播种代码");
-  // 断言：SEED 的**插入位置变量**在拼 HTML 时排在 iframe 之前。
-  //   这里检查拼装模板里 seed 的占位符位置 < iframe 的位置
-  const tplFor = /html\s*=\s*f?"""([\s\S]*?)"""/.exec(SRC);
-  if (tplFor) {
-    const tpl = tplFor[1];
-    const si = tpl.search(/\{__NB_SEED|__NB_SEED_JS|nbSeedCad|seed/i);
-    const ii = tpl.indexOf("<iframe");
-    if (si >= 0 && ii >= 0) {
-      assert.ok(si < ii, `播种脚本在模板里排到了 iframe 之后（seed@${si} > iframe@${ii}）—— 查看器读不到设置`);
-    }
-  }
-  // 无论模板怎么拼，至少确认注释里写明了顺序要求
-  assert.ok(/iframe\s*之前|before the iframe|先播种|顺序/.test(SRC),
-    "缺少「播种必须在 iframe 之前」的说明 —— 后人容易改错顺序");
+check("C <iframe> 出现在收 UI 的 <script> 之前（否则脚本拿到 null）", () => {
+  const iframeIdx = SRC.indexOf("<iframe id=\\\"nb-lite-frame\\\"");
+  const scriptIdx = SRC.indexOf("<script>(function(){");
+  assert.ok(iframeIdx > 0, "pages.py 里找不到 <iframe id=\"nb-lite-frame\"");
+  assert.ok(scriptIdx > 0, "pages.py 里找不到收 UI 的 <script>(function(){");
+  assert.ok(iframeIdx < scriptIdx,
+    `<iframe>(@${iframeIdx}) 排到了收 UI <script>(@${scriptIdx}) 之后 —— ` +
+    `脚本解析时 getElementById 会拿到 null，整段 CSS 兜底空转（v5 实测踩过）`);
+  assert.ok(/__nbFrame\s*\(/.test(SRC),
+    "缺少惰性取 frame 的 __nbFrame() —— 异步回调里现取才稳");
 });
 
-check("D _LITE_HIDE['cad'] 不含笼统的 [class*='status-bar']（会连布局页签一起藏）", () => {
-  // ★ 注意：不能靠「_LITE_HIDE = {...}」整体匹配 —— 里面含注释和嵌套列表，
-  //   非贪婪到第一个 } 会截断。直接从 `"cad": [` 起抓到配对的 `],` 更稳。
-  const start = SRC.search(/["']cad["']\s*:\s*\[/);
-  assert.ok(start >= 0, "_LITE_HIDE 里没有 cad 段");
-  // 从 start 往后逐字符数括号，找配对的 ]
-  let i = SRC.indexOf("[", start), depth = 0, end = -1;
-  for (; i < SRC.length; i++) {
-    if (SRC[i] === "[") depth++;
-    else if (SRC[i] === "]") { depth--; if (depth === 0) { end = i; break; } }
-  }
-  assert.ok(end > start, "cad 段的 ] 没找到（括号不配对？）");
-  const seg = SRC.slice(start, end + 1);
+check("D 状态栏必须整条藏（含布局页签），不能只藏右半", () => {
+  const seg = cadSegment();
+  // 整条：要么写 .ml-status-bar，要么写 [class*='ml-status-bar']
+  assert.ok(/\.ml-status-bar\b/.test(seg),
+    "cad 段缺少 .ml-status-bar（整条状态栏）—— 用户明确要求「状态栏也不要显示」");
+  // 布局页签 Model/Layout1/Layout2 必须一起藏（它们在 .ml-status-bar-left 里）
+  assert.ok(/\.ml-layout-tabs\b/.test(seg),
+    "cad 段应显式隐藏 .ml-layout-tabs（布局页签，在状态栏左半）");
+  // 坐标显示也得藏
+  assert.ok(/\.ml-status-bar-current-pos\b/.test(seg),
+    "cad 段应隐藏 .ml-status-bar-current-pos（坐标显示）");
+  // ★ 反面：不允许用 [class*='status-bar'] 这种**不带 ml- 前缀**的笼统匹配
+  //   （它会误伤 kk/PDF 或页面里其它叫 status-bar 的东西）
   assert.ok(!/\[class\*=['"]status-bar['"]\]/.test(seg),
-    "cad 段里仍有 [class*='status-bar'] —— 它会把 .ml-status-bar（含布局页签）一起隐藏");
-  assert.ok(/\.ml-status-bar-right/.test(seg),
-    "cad 段应精确隐藏 .ml-status-bar-right（坐标/性能面板所在处）");
-  assert.ok(/\.ml-status-bar-current-pos/.test(seg),
-    "cad 段应精确隐藏 .ml-status-bar-current-pos");
+    "cad 段出现 [class*='status-bar']（无 ml- 前缀）—— 过于笼统，易误伤");
 });
 
-check("E marker 版本号能反映当前实现（防「改了样式没改 marker」）", () => {
+check("E marker 版本号反映当前实现（防「改了样式没改 marker」）", () => {
   const m = /nb-cad-hide-v(\d+)/.exec(SRC);
   assert.ok(m, "找不到 nb-cad-hide-vN marker");
-  assert.ok(Number(m[1]) >= 4,
-    `marker 还停在 v${m[1]}，本版应为 v4（v4 才加了 .ml-cad-main 撑满的修正）`);
+  assert.ok(Number(m[1]) >= 6,
+    `marker 还停在 v${m[1]}，本版应为 v6（v6 才彻底去掉了 localStorage 播种）`);
 });
 
 console.log(`\n通过 ${pass} / 失败 ${fail}`);
