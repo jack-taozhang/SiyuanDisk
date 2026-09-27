@@ -1,7 +1,7 @@
 {
   "name": "siyuan-nebuladisk",
   "author": "zhangtao",
-  "url": "",
+  "url": "https://github.com/jack-taozhang/SiyuanDisk",
   "version": "1.0.2",
   "minAppVersion": "3.0.0",
   "backends": [

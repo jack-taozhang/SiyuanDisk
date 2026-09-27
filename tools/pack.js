@@ -2,8 +2,9 @@
 /* 打包 siyuan-nebuladisk 为思源可导入的 zip。
  *
  * 用法:
- *   node tools/pack.js              # 输出到 ../_dist-packages/
+ *   node tools/pack.js              # 输出到仓库 dist-package/
  *   node tools/pack.js <输出目录>    # 指定输出目录
+ *   node tools/pack.js --rebuild    # 先重新构建 dist/ 再打包（发版时用）
  *
  * ★ 关键约定（思源插件包规范）★
  *   zip 内**顶层必须是一个目录**，目录名 == plugin.json 的 name，
@@ -11,19 +12,27 @@
  *   直接压平（顶层就是 plugin.json）思源认不出。
  *
  * ★ 只收运行必需的文件 ★
- *   不收：src/ test/ tools/ node_modules/ *.bak
- *   收：index.js(产物) index.css(产物) plugin.json icon.png i18n/ README*.md DEVELOPMENT.md
+ *   不收：src/ test/ tools/ node_modules/ *.bak 以及 DEVELOPMENT.md / REPORT-*.md
+ *         —— 开发文档装完没人看，白占体积。
+ *   收：index.js(产物) index.css(产物) plugin.json icon.png i18n/*.json README*.md
  *
  * ★★★ 最容易踩的坑：index.js 必须取【构建产物】★★★
  *   插件工程根目录的 index.js 是**分模块源码入口**（约 83KB，含 `import "./src/x.js"`）。
- *   思源加载的是**单文件打包产物**（约 487KB，代码里无相对 require）。
+ *   思源加载的是**单文件打包产物**（约 519KB，代码里无相对 require）。
  *   取错对象 → 交付一个思源根本加载不起来的包，而且错误**只出现在浏览器 console**，
  *   siyuan.log 里什么都看不到。
+ *   （2026-09-26 真的这么推送过一次到 NAS，宿主/容器 MD5 全相等，
+ *     但内容是源码 ⇒ 插件静默不加载。判据是**看文件头**，不是看 MD5。）
  *   所以这里从 dist/（或本机思源环）取，并对此做**强断言**（见自检 3）。
  *
  * ★ 自检里判「有没有相对 require」必须先剥注释 ★
  *   产物里有 3 处 `require("./` 全在**注释**里，是在解释「为什么不能写相对 require」。
  *   不剥注释会把文档文字当代码，误判成"不是打包产物"。
+ *
+ * ★ 自检 5：i18n 词表必须是本插件的 ★
+ *   i18n/ 被画布插件整份覆盖过 —— 476 条 canvasHelper/untitledCanvas 词条，
+ *   本插件真正引用的 key 一个都没有。因代码每处都有中文兜底，
+ *   中文环境完全看不出问题，只在英文界面退化成兜底值。
  */
 const fs = require("fs");
 const path = require("path");
@@ -31,7 +40,10 @@ const zlib = require("zlib");
 
 const ROOT = path.resolve(__dirname, "..");
 const NAME = JSON.parse(fs.readFileSync(path.join(ROOT, "plugin.json"), "utf8")).name;
-const OUT_DIR = process.argv[2] || path.resolve(ROOT, "..", "_dist-packages");
+
+/** --rebuild / --no-build 之外的第一个非选项参数 = 输出目录 */
+const OUTPUT_ARG = process.argv.slice(2).find((a) => !a.startsWith("--"));
+const OUT_DIR = OUTPUT_ARG || path.resolve(ROOT, "dist-package");
 
 // 产物来源候选（顺序即优先级）：仓库 dist/ → 本机思源安装位
 const BUILT_CANDIDATES = [
@@ -47,6 +59,17 @@ function pickBuiltDir() {
   return null;
 }
 
+/** --rebuild：先跑构建，保证包里是当前源码的产物 */
+if (process.argv.includes("--rebuild")) {
+  console.log("→ 先重新构建（node tools/build.js --repo）…\n");
+  const { execFileSync } = require("child_process");
+  execFileSync(process.execPath, [path.join(__dirname, "build.js"), "--repo"], {
+    stdio: "inherit",
+    cwd: ROOT,
+  });
+  console.log("");
+}
+
 const BUILT = pickBuiltDir();
 if (!BUILT) {
   console.error("✗ 找不到有效的构建产物（index.js 应 >200KB）。请先运行：");
@@ -56,7 +79,7 @@ if (!BUILT) {
 
 const manifest = JSON.parse(fs.readFileSync(path.join(ROOT, "plugin.json"), "utf8"));
 const VER = manifest.version;
-const ZIP = path.join(OUT_DIR, `${NAME}-${VER}.zip`);
+const ZIP = path.join(OUT_DIR, `${NAME}-v${VER}.zip`);
 
 // （磁盘路径, zip 内相对名）
 const ITEMS = [
@@ -66,9 +89,8 @@ const ITEMS = [
   [path.join(ROOT, "icon.png"), "icon.png"],
   [path.join(ROOT, "README.md"), "README.md"],
   [path.join(ROOT, "README.zh_CN.md"), "README.zh_CN.md"],
-  [path.join(ROOT, "DEVELOPMENT.md"), "DEVELOPMENT.md"],
-  [path.join(ROOT, "REPORT-t67.md"), "REPORT-t67.md"],
   [path.join(ROOT, "i18n", "zh_CN.json"), "i18n/zh_CN.json"],
+  [path.join(ROOT, "i18n", "en_US.json"), "i18n/en_US.json"],
 ];
 
 /* ---------------- 极简 ZIP 写入（store/deflate，无外部依赖） ---------------- */
@@ -246,21 +268,61 @@ check("自检 3：index.js 必须是单文件产物（不是源码入口）", ()
   );
 });
 
-check("自检 4：必需文件齐备", () => {
+check("自检 4：必需文件齐备（且不含开发文档）", () => {
   const need = [
     "index.js",
     "index.css",
     "plugin.json",
     "icon.png",
     "i18n/zh_CN.json",
+    "i18n/en_US.json",
     "README.md",
     "README.zh_CN.md",
-    "DEVELOPMENT.md",
   ];
   const got = [...zf.keys()].map((n) => n.replace(`${NAME}/`, ""));
   const lack = need.filter((n) => !got.includes(n));
   if (lack.length) throw new Error("缺 " + lack.join(", "));
-  console.log(`   ✅ 齐备：${need.join(", ")}`);
+  const devDocs = got.filter((n) => /^DEVELOPMENT|^REPORT-/.test(n));
+  if (devDocs.length) throw new Error("不该打进包里的开发文档：" + devDocs.join(", "));
+  console.log(`   ✅ 齐备 ${need.length} 项，且无开发文档`);
+});
+
+check("自检 5：i18n 词表必须是本插件的（防跨项目污染）", () => {
+  const USED = [
+    "dockTitle",
+    "embedFileName",
+    "openInBrowser",
+    "refreshAll",
+    "settingsTitle",
+    "settingsVerify",
+  ];
+  const CANVAS = ["canvasHelper", "untitledCanvas", "toolbarNew", "dockEmptySelectionTip"];
+  const names = [...zf.keys()].filter((n) => /^i18n\/.*\.json$/.test(n.replace(`${NAME}/`, "")));
+  if (!names.length) throw new Error("包内没有 i18n/*.json");
+  for (const n of names) {
+    const obj = JSON.parse(zf.get(n).toString("utf8"));
+    const keys = Object.keys(obj);
+    const canvasHit = CANVAS.filter((k) => keys.includes(k));
+    if (canvasHit.length) {
+      throw new Error(`${n} 出现画布插件词条 ${canvasHit.join(", ")} ⇒ 被覆盖了`);
+    }
+    const hit = USED.filter((k) => keys.includes(k));
+    if (!hit.length) {
+      throw new Error(
+        `${n} 里没有任何本插件引用的 key（共 ${keys.length} 条）⇒ 整份词表都不是本插件的`,
+      );
+    }
+    console.log(`   ✅ ${n.replace(`${NAME}/`, "")}：${keys.length} 条，命中 ${hit.length}/${USED.length} 个在用 key`);
+  }
+});
+
+check("自检 6：清单里引用的文件都在包内", () => {
+  const got = new Set([...zf.keys()].map((n) => n.replace(`${NAME}/`, "")));
+  const refs = [...Object.values(manifest.readme || {})];
+  if (manifest.icon) refs.push(manifest.icon);
+  const lack = refs.filter((r) => !got.has(r));
+  if (lack.length) throw new Error("清单引用了但包内没有：" + lack.join(", "));
+  console.log(`   ✅ ${refs.join(", ")} 全部在包内`);
 });
 
 if (failed) {
