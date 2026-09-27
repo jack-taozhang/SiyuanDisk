@@ -2273,6 +2273,289 @@ const __mod_api = (() => {
   };
 })();
 
+/* ===== src/external.js ===== */
+const __mod_external = (() => {
+  const module = { exports: {} };
+  const exports = module.exports;
+  /**
+   * NebulaDisk 对外能力契约（`window.__nebuladiskPlugin.external`）。
+   *
+   * ══════════════════════════════════════════════════════════════════
+   * ★ 这份契约唯一的硬约束：**网盘不认识画布**（C-5）★
+   * ══════════════════════════════════════════════════════════════════
+   *
+   * 契约只描述「我能做什么」（list / stat / search / 预览地址构造 / 类型分流），
+   * **绝不描述**「谁在调我」。这里不出现 canvas / diskcanvas / node / edge
+   * 之类的消费方词汇。
+   *
+   * 为什么这么设计：
+   *   网盘是**通用**资料层，消费方可能有很多（画布、思源侧栏、外部工具、脚本）。
+   *   一旦契约里写死了某个消费方的语义，网盘就被绑死，失去通用性 ——
+   *   这正是 `05-EMPOWERMENT.md` 里强调的「依赖必须单向：消费方 → 网盘」。
+   *
+   * 另一条约束（C-4）：**URL 一律由本侧构造**，消费方禁止自己拼后端地址。
+   *   原因：后端地址可能是容器内名（如 `nebula:8088`），需要经
+   *   `browserReachableUrl()` 改写为浏览器可达地址；签名逻辑也可能变化。
+   *   让消费方自己拼 URL = 把这些内部知识泄漏出去，且必然漂移。
+   *
+   * 本模块是**纯函数构造器**，不持有状态、不发起请求 —— 便于单测。
+   */
+
+  /**
+   * 构造 external 契约对象。
+   *
+   * @param {object} deps 依赖注入（便于单测与解耦）
+   * @param {object} deps.API          src/api.js 导出的 API 总表
+   * @param {Function} deps.pickViewer (name) => 类型字符串
+   * @param {Function} deps.diag       日志函数
+   * @returns {object} 冻结的能力对象
+   */
+  function createExternalContract({ API, pickViewer, diag } = {}) {
+    if (!API || typeof API !== "object") {
+      throw new Error("createExternalContract: 缺少 API 依赖");
+    }
+    if (typeof pickViewer !== "function") {
+      throw new Error("createExternalContract: 缺少 pickViewer 依赖");
+    }
+
+    /**
+     * 统一的参数校验。所有对外方法都**不允许**抛异常穿过边界 ——
+     * 消费方（画布）不希望因为网盘侧的一个参数问题让整个渲染挂掉。
+     * 失败一律返回 `{ ok: false, error, reason }` 形态。
+     */
+    const guard = async (fn, label) => {
+      try {
+        const data = await fn();
+        return { ok: true, data };
+      } catch (error) {
+        const status = error && typeof error.status === "number" ? error.status : 0;
+        // 404 = 不存在；403 = 无权限；0/其它 = 网络或未知（**必须与 404 区分**，
+        // 否则消费方会把「网盘暂时连不上」误报成「文件已被删除」）
+        const reason =
+          status === 404 ? "missing" : status === 403 ? "denied" : "unreachable";
+        diag && diag(`[external] ${label} 失败: status=${status} ${error && error.message}`);
+        return { ok: false, error: (error && error.message) || String(error), reason, status };
+      }
+    };
+
+    const contract = {
+      /** 契约版本。消费方据此判断能力是否存在，不靠探测方法名。 */
+      version: 1,
+
+      /** 契约标识，便于日志排查（不表示消费方） */
+      id: "nebuladisk.external",
+
+      // ──────────────────────────────────────────────
+      // 挂载点
+      // ──────────────────────────────────────────────
+
+      /**
+       * 列出挂载点。
+       * 后端**没有** `/api/mounts`（实测 404），挂载点只能从 `/api/me` 取。
+       * @returns {{ok:boolean, data?:Array<{label:string,writable:boolean}>, error?:string}}
+       */
+      listMounts: () =>
+        guard(async () => {
+          const me = await API.me();
+          const mounts = (me && me.mounts) || [];
+          return mounts.map((m) => ({
+            label: String(m.label || ""),
+            writable: !!m.writable,
+          }));
+        }, "listMounts"),
+
+      // ──────────────────────────────────────────────
+      // 目录与元数据
+      // ──────────────────────────────────────────────
+
+      /**
+       * 列目录。
+       * @param {string} mount 挂载点名
+       * @param {string} path  挂载点内路径（`/` 为根）
+       */
+      list: (mount, path) =>
+        guard(async () => {
+          const r = await API.list(mount, path);
+          // 后端可能返回数组，也可能返回 {entries:[...]} —— 统一成数组
+          if (Array.isArray(r)) return r;
+          if (r && Array.isArray(r.entries)) return r.entries;
+          if (r && Array.isArray(r.items)) return r.items;
+          return [];
+        }, "list"),
+
+      /**
+       * 取单个文件/目录的元数据。
+       *
+       * ⚠️ 后端**没有稳定文件 ID**（`Entry` 只有 name/is_dir/size/mtime/ext/route/mime/path，
+       *    实测确认），所以返回里不会有 id 字段。消费方不要依赖「文件身份」，
+       *    只能依赖「地址坐标」——这是已拍板的 D-1b 决策（不做身份表）。
+       */
+      stat: (mount, path) =>
+        guard(async () => {
+          const r = await API.stat(mount, path);
+          return r || null;
+        }, "stat"),
+
+      /**
+       * 搜索。端点实测存在（2026-09-24 复验 200）。
+       * @param {string} mount
+       * @param {string} q      关键词（空格/逗号/中文逗号/竖线分隔 = OR）
+       * @param {string} path   搜索起点
+       * @param {number} limit  上限（后端硬上限 500）
+       */
+      search: (mount, q, path = "", limit = 500) =>
+        guard(async () => {
+          const r = await API.search(mount, q, path, limit);
+          return r || null;
+        }, "search"),
+
+      // ──────────────────────────────────────────────
+      // 写操作（F-300 新增：让消费方能重命名 / 删除 / 新建文件夹）
+      // ──────────────────────────────────────────────
+      //
+      // ★ 为什么写操作也要走契约，而不是让消费方直连后端 API ★
+      //   后端端点路径（`/api/mkdir` 等）、参数名（`path` 是父目录还是自身）、
+      //   鉴权头、容器内主机名改写 —— 全是网盘的**内部知识**。
+      //   一旦消费方直连，网盘改端点就会静默破坏所有消费方（C-4 同理）。
+      //
+      // ★ 这些方法的语义对**所有**消费方成立，不含画布概念（C-5）★
+      //   它们是通用文件操作：新建目录、改名、删除、移动。
+
+      /**
+       * 新建目录。
+       * @param {string} mount 挂载点
+       * @param {string} path  **父目录**路径
+       * @param {string} name  新目录名（单段，不含 `/`）
+       */
+      mkdir: (mount, path, name) =>
+        guard(async () => {
+          const r = await API.mkdir(String(mount || ""), String(path || "/"), String(name || ""));
+          return r || null;
+        }, "mkdir"),
+
+      /**
+       * 重命名（文件或目录）。
+       * @param {string} mount
+       * @param {string} path  被重命名对象的**完整路径**
+       * @param {string} name  新名称（单段，不含 `/`）
+       */
+      rename: (mount, path, name) =>
+        guard(async () => {
+          const r = await API.rename(String(mount || ""), String(path || ""), String(name || ""));
+          return r || null;
+        }, "rename"),
+
+      /**
+       * 删除（文件或目录）。
+       *
+       * ⚠️ 目录删除通常是**递归**的（后端语义）。消费方必须自行做二次确认 ——
+       *    契约层不做确认 UI（那是消费方的事），但这里是「危险操作」这件事
+       *    会通过返回值如实反映，不做静默吞并。
+       * @param {string} mount
+       * @param {string} path
+       */
+      remove: (mount, path) =>
+        guard(async () => {
+          const r = await API.remove(String(mount || ""), String(path || ""));
+          return r || null;
+        }, "remove"),
+
+      /**
+       * 移动 / 复制。
+       * @param {string} mount
+       * @param {string} path    源路径
+       * @param {string} target  **目标目录**路径
+       * @param {boolean} isMove true=移动，false=复制
+       */
+      move: (mount, path, target, isMove = true) =>
+        guard(async () => {
+          const r = await API.move(
+            String(mount || ""),
+            String(path || ""),
+            String(target || "/"),
+            !!isMove,
+          );
+          return r || null;
+        }, "move"),
+
+      // ──────────────────────────────────────────────
+      // 类型分流（消费方据此决定怎么渲染）
+      // ──────────────────────────────────────────────
+
+      /**
+       * 按文件名判断渲染通道。
+       * @returns {"image"|"video"|"audio"|"pdf"|"office"|"cad"|"text"|"archive"|"download"}
+       */
+      viewerKind: (name) => {
+        try {
+          return pickViewer(String(name || ""));
+        } catch {
+          return "download";
+        }
+      },
+
+      // ──────────────────────────────────────────────
+      // URL 构造（★ 消费方禁止自己拼 ★ C-4）
+      // ──────────────────────────────────────────────
+
+      /**
+       * 预览地址（内嵌用）。
+       * 内部已处理：容器内主机名 → 浏览器可达地址的改写。
+       * @returns {Promise<string>}
+       */
+      previewUrl: (mount, path) =>
+        guard(async () => String(await API.previewUrl(mount, path) || ""), "previewUrl"),
+
+      /** CAD 预览地址。 */
+      cadUrl: (mount, path) =>
+        guard(async () => String(await API.cadUrl(mount, path) || ""), "cadUrl"),
+
+      /** 网页直连地址（可选走 `/lite` 外壳，用于收第三方 UI）。 */
+      webUrl: (mount, path, name) =>
+        guard(async () => String(API.browserViewUrl(mount, path, name) || ""), "webUrl"),
+
+      /**
+       * 签名直链（下载/原始字节）。
+       * @param {boolean} download true=强制下载，false=内联
+       */
+      signedRawUrl: (mount, path, download = false) =>
+        guard(async () => String(await API.signedRawUrl(mount, path, download) || ""), "signedRawUrl"),
+
+      /** 下载地址（非签名，保留原语义）。 */
+      downloadUrl: (mount, path, inline = false) =>
+        guard(async () => String(API.downloadUrl(mount, path, inline) || ""), "downloadUrl"),
+
+      // ──────────────────────────────────────────────
+      // 能力探测（可选，消费方一般不需要）
+      // ──────────────────────────────────────────────
+
+      /** 三个预览子服务的健康状态。 */
+      health: () =>
+        guard(async () => {
+          const out = {};
+          for (const [key, fn] of [
+            ["onlyoffice", API.ooHealth],
+            ["kkfileview", API.kkHealth],
+            ["cad", API.cadHealth],
+          ]) {
+            try {
+              out[key] = await fn();
+            } catch (e) {
+              out[key] = { ok: false, error: (e && e.message) || String(e) };
+            }
+          }
+          return out;
+        }, "health"),
+    };
+
+    return Object.freeze(contract);
+  }
+  return {
+    __cjs: false,
+    createExternalContract,
+  };
+})();
+
 /* ===== src/icons.js ===== */
 const __mod_icons = (() => {
   const module = { exports: {} };
@@ -2801,8 +3084,8 @@ const __mod_embed = (() => {
 
     const head = document.createElement("div");
     head.className = "nb-embed-head";
+    // ★ 需求2（2026-09-26）：与文件嵌入块一致 —— 去掉六点手柄 `⠿` ★
     head.innerHTML = `
-      <span class="nb-embed-grip" title="按住拖动：调整本嵌入块在笔记中的位置">⠿</span>
       <span class="nb-embed-title">
         <svg><use xlink:href="#iconNebulaDisk"></use></svg>
         <span class="nb-embed-mount"></span>
@@ -2830,8 +3113,8 @@ const __mod_embed = (() => {
     head.appendChild(toolbar);
     wrap.appendChild(head);
 
-    // ★ 任务27：目录嵌入块也可拖动排序 ★
-    makeEmbedDraggable(head.querySelector(".nb-embed-grip"), wrap, plugin);
+    // ★ 需求2（2026-09-26）：手柄已去掉 ⇒ 传 null，退化为整体拖动。
+    makeEmbedDraggable(null, wrap, plugin);
 
     const list = document.createElement("div");
     list.className = "nb-embed-list";
@@ -2844,7 +3127,13 @@ const __mod_embed = (() => {
       //     ① `:/${currentPath}`  → currentPath 已带前导斜杠 ⇒ `://`（用户报"多了一个 /"）
       //     ② `:${displayMountPath("", currentPath).slice(1)}` → 单斜杠对了，
       //        但仍带一个多余的冒号，跟文件嵌入的显示风格不一致
-      //   现在与文件嵌入统一：只显示规范化后的路径，盘符交给 .nb-embed-mount。
+      //
+      // ★ 需求3（2026-09-26）：**文件嵌入块**已改成一个元素显示
+      //   `盘符:/路径`（见 renderFileEmbed）。但**目录浏览器**不动 ——
+      //   它的路径是「随浏览实时变化」的，而工具条右边就跟着「↑ 上一级」，
+      //   保持 `售前项目` + `/a/b` 两段反而更容易看出"当前在哪一级"。
+      //   需求3 的原文只针对**文件**嵌入块（举例就是一个 .pdf），
+      //   所以这里维持两段式，不跟着改。
       pathEl.textContent = currentPath ? displayMountPath("", currentPath).slice(1) : "";
       upBtn.style.visibility = currentPath ? "visible" : "hidden";
       list.innerHTML = `<div class="nb-embed-loading">加载中…</div>`;
@@ -2937,12 +3226,24 @@ const __mod_embed = (() => {
    *   同级块的范围限定在**同一个文档**里、且都是本插件的嵌入块，
    *   避免把块挪进别的容器（moveBlock 对嵌套容器有额外校验，会失败）。
    *
-   * @param {HTMLElement} handleEl 拖动手柄（放进头部）
+   * ★ 需求2（2026-09-26）：handleEl 允许为 null ★
+   *
+   *   去掉六点手柄之后，调用方传 null —— 这时改用 **wrapEl 本身**作拖动源。
+   *   仍然可拖，但语义变化要写清楚：
+   *     · 手柄版：只有按住 `⠿` 才起拖 ⇒ 头部其余区域能正常选中文本
+   *     · 整体版：整个嵌入块都是拖动源。嵌入块头上是按钮、下面常是 iframe，
+   *       文本选择需求很低；而 `draggable=true` 只对**普通文本节点**的选中
+   *       有影响，按钮/iframe 不受累（iframe 还会在 dragstart 里被禁指针）。
+   *   ⇒ 功能不丢，视觉变干净，符合用户「去掉那个字」的意图。
+   *
+   * @param {HTMLElement|null} handleEl 拖动手柄（放进头部）；传 null 表示用整体
    * @param {HTMLElement} wrapEl   整个嵌入块容器（用来找到自己 / 同级块）
    * @param {object} plugin        插件实例（取 api、日志）
    * @returns {{setDraggable: Function}}
    */
   function makeEmbedDraggable(handleEl, wrapEl, plugin) {
+    // 无手柄时，`handle` 在下面被重新指向头部元素（let，可重新赋值）
+    let handle = handleEl || null;
     /** 收集同一文档里的同级嵌入块（按 DOM 顺序 = 视觉顺序） */
     function siblingEmbeds() {
       const root = wrapEl.closest(".protyle-wysiwyg") || document;
@@ -2988,12 +3289,25 @@ const __mod_embed = (() => {
 
     let dragging = false;
 
-    handleEl.draggable = true;
-    handleEl.classList.add("nb-embed-drag");
+    // ★ 需求2（2026-09-26）：手柄 `⠿` 已从头部移除 ⇒ handleEl 传 null。
+    //   退化策略：拿**头部 `.nb-embed-head`** 当拖动源，而不是整个 wrapEl。
+    //     · 头部是信息条（图标 + 路径 + 按钮），没有 iframe ⇒ 拖动稳定
+    //     · 主体（含 iframe 预览区）不加 draggable ⇒ 不影响预览内的交互
+    //   `draggable=true` 需要「按下 + 位移」才触发 dragstart ⇒ 单击按钮不受影响。
+    if (handleEl) {
+      handleEl.draggable = true;
+      handleEl.classList.add("nb-embed-drag");
+      handle = handleEl;
+    } else {
+      const headEl = wrapEl.querySelector(".nb-embed-head") || wrapEl;
+      headEl.draggable = true;
+      headEl.classList.add("nb-embed-drag");
+      handle = headEl;
+    }
 
-    handleEl.addEventListener("dragstart", (ev) => {
+    handle.addEventListener("dragstart", (ev) => {
       dragging = true;
-      handleEl.classList.add("is-dragging");
+      handle.classList.add("is-dragging");
       wrapEl.classList.add("is-dragging");
       try {
         ev.dataTransfer.effectAllowed = "move";
@@ -3005,9 +3319,9 @@ const __mod_embed = (() => {
       }
     });
 
-    handleEl.addEventListener("dragend", () => {
+    handle.addEventListener("dragend", () => {
       dragging = false;
-      handleEl.classList.remove("is-dragging");
+      handle.classList.remove("is-dragging");
       wrapEl.classList.remove("is-dragging");
       for (const f of Array.from(wrapEl.querySelectorAll("iframe"))) {
         f.style.pointerEvents = "";
@@ -3134,7 +3448,7 @@ const __mod_embed = (() => {
       if (!dragging) return;
       ev.preventDefault();
       dragging = false;
-      handleEl.classList.remove("is-dragging");
+      handle.classList.remove("is-dragging");
       wrapEl.classList.remove("is-dragging");
       for (const f of Array.from(wrapEl.querySelectorAll("iframe"))) {
         f.style.pointerEvents = "";
@@ -3147,8 +3461,11 @@ const __mod_embed = (() => {
     return {
       /** 允许外部（如设置项）开/关拖动 */
       setDraggable(on) {
-        handleEl.draggable = !!on;
-        handleEl.style.display = on ? "" : "none";
+        // ★ 需求2：无手柄模式下 handle === .nb-embed-head。
+        //   此时**不能**用 display:none 关掉它 —— 那会把整个头部藏起来，
+        //   用户连路径和按钮都看不见了。只摘掉 draggable 即可。
+        handle.draggable = !!on;
+        if (handleEl) handleEl.style.display = on ? "" : "none";
       },
     };
   }
@@ -3179,34 +3496,46 @@ const __mod_embed = (() => {
 
     const head = document.createElement("div");
     head.className = "nb-embed-head";
+    // ★★★ 需求2（2026-09-26）：头部不再有六点拖动手柄 ★★★
+    //
+    //   用户原话：「去掉网盘文件嵌入块路径前面显示的那个6个点，
+    //             分两列三排显示的那个字。」
+    //   那就是 `⠿`（U+283F BRAILLE PATTERN DOTS-123456），
+    //   浏览器里按 2 列 × 3 排渲染，视觉上「6 个点」。
+    //
+    //   手柄只是**拖动排序**的把手，去掉之后：
+    //     · 嵌入块仍在文档里可选中 / 可剪切（思源原生块操作不受影响）
+    //     · makeEmbedDraggable 明确支持 handleEl 为 null（见该函数注释），
+    //       改用 wrapEl 自身作拖动源 ⇒ 拖动排序功能不丢
     head.innerHTML = `
-      <span class="nb-embed-grip" title="按住拖动：调整本嵌入块在笔记中的位置">⠿</span>
       <span class="nb-embed-title">
         <svg><use xlink:href="#iconNebulaDisk"></use></svg>
-        <span class="nb-embed-mount"></span>
         <span class="nb-embed-path"></span>
       </span>`;
-    head.querySelector(".nb-embed-mount").textContent = spec.mount;
-    // ★ 任务26（四轮 · 真机截图定案）★
+    // ★★★ 需求3（2026-09-26）：路径显示「盘符:/路径」 ★★★
     //
-    //  头部结构是：`[盘符元素 .nb-embed-mount] + [路径元素 .nb-embed-path]`
-    //  两者**并排显示**。所以 .nb-embed-path 只能放**路径部分**，
-    //  不能放 displayMountPath() 的完整返回（那个带盘符）。
+    //   用户原话：「目前是 售前项目/FA&JG-项目评审会议规范要求.pdf
+    //             调整为 售前项:/FA&JG-项目评审会议规范要求.pdf」
     //
-    //  历史三轮各自踩了一个坑，记下来免得再犯：
+    //   注意用户写的是 **`售前项:`**（少一个「目」字），那是**举例时的手误** ——
+    //   盘符名本身不可能被截断，所以这里保留完整盘符 `售前项目:`。
+    //
+    //   历史四轮演进（前四轮都没走到这个形态，记下来免得再回头）：
     //    ① 第一轮：`filePathRaw ? ":" + filePathRaw : ""`
     //       → path 带前导斜杠时拼出 `://`（用户报「多了一个 /」）
-    //    ② 第二轮：`displayMountPath(spec.mount, filePathRaw)`
-    //       → `://` 没了，但把盘符也塞进 path 元素 ⇒ 盘符显示**两次**
-    //         （用户报「售前项目 售前项目:/托璞勒 宣传册.pdf」）
-    //    ③ 本轮：只取 displayMountPath 的**斜杠之后**的部分，
-    //       盘符交给 .nb-embed-mount 那份，两边各司其职。
+    //    ② 第二轮：`displayMountPath(spec.mount, filePathRaw)` 塞进 path 元素
+    //       → 盘符显示**两次**（`.nb-embed-mount` 一份 + path 一份）
+    //    ③ 第三轮：`.nb-embed-mount` = 盘符、`.nb-embed-path` = 斜杠之后
+    //       → 视觉上 `售前项目` 与 `/FA&JG-….pdf` 之间**有 5px 的 flex gap**，
+    //         拼起来是「售前项目 /FA&JG-….pdf」，不是用户要的紧贴形态
+    //    ④ 本轮：**合并为一个元素**，直接放 displayMountPath 的完整返回
+    //       ⇒ `售前项目:/FA&JG-项目评审会议规范要求.pdf`（无空格、无重复）
     //
-    //  ⚠️ displayMountPath("盘","") 返回 `盘:/` 而**不是**空串，
+    //   ⚠️ displayMountPath("盘","") 返回 `盘:/` 而**不是**空串，
     //     所以必须先判空再调用，不能靠 `|| ""` 兜底（死兜底）。
     const filePathRaw = spec.path || spec.name || "";
     head.querySelector(".nb-embed-path").textContent =
-      filePathRaw ? displayMountPath("", filePathRaw).slice(1) : "";
+      filePathRaw ? displayMountPath(spec.mount, filePathRaw) : spec.mount || "";
 
     const toolbar = document.createElement("span");
     toolbar.className = "nb-embed-tools";
@@ -3371,7 +3700,9 @@ const __mod_embed = (() => {
     wrap.appendChild(head);
 
     // ★ 任务27：文件嵌入块可拖动排序（拖动时视图跟随定位到本块）★
-    makeEmbedDraggable(head.querySelector(".nb-embed-grip"), wrap, plugin);
+    //   ★ 需求2（2026-09-26）：手柄已去掉 ⇒ 传 null，
+    //     makeEmbedDraggable 会退化成用整个头部 wrapEl 当拖动源。
+    makeEmbedDraggable(null, wrap, plugin);
 
     const frameBox = document.createElement("div");
     frameBox.className = "nb-embed-frame-box";
@@ -4025,6 +4356,16 @@ const __mod_embed = (() => {
    *   结果修了两处漏了一处 —— 用户点的是漏的那一处，白修。
    *   ⇒ 统一收敛到这里，**新增插入点必须调它**，不要再手写 protyle.insert。
    *
+   * ★★★ 需求5（2026-09-26）：插入位置 = 「光标所在块的上面」★★★
+   *
+   *   用户原话：「网盘拖拽插入嵌入块 和 / 插入 目前都在目前光标下一个位置，
+   *             调整为当前位置插入。」
+   *   追问后选定：「插在光标所在块的上面（推荐）」。
+   *
+   *   落位实现见 locateInsertPoint 的返回：`nextID = 光标块`（内核语义 =
+   *   插到该块**之前**）。拖拽插入与 `/` 斜杠插入**共用这一条通道**，
+   *   所以两处一次性同时生效 —— 这正是"抽成一个函数"的价值。
+   *
    * @param {object} plugin  插件实例（用来取名字、日志）
    * @param {any} protyle    当前编辑器（可为 null，会用 DOM 兜底找光标）
    * @param {object} spec    嵌入参数
@@ -4310,7 +4651,26 @@ const __mod_embed = (() => {
 
     // ── 落到「父块 + 位置」────────────────────────────────────────────
     let parentID = docId;
-    let previousID = "";
+    // ★★★ 需求5（2026-09-26）：锚点语义从 previousID 改为 nextID ★★★
+    //
+    //   用户原话：「网盘拖拽插入嵌入块 和 / 插入 目前都在目前光标下一个位置，
+    //             调整为当前位置插入。」
+    //   （追问后用户选定：「插在光标所在块的上面」）
+    //
+    //   内核语义（两条都**实测过**，不是推断）：
+    //     · `/api/block/insertBlock {parentID, previousID}` ⇒ 插到 previousID **之后**
+    //     · `/api/block/insertBlock {parentID, nextID}`     ⇒ 插到 nextID **之前**
+    //   实测：AAA|BBB|CCC 以 previousID=BBB 插 XXX ⇒ AAA|BBB|XXX|CCC
+    //         以 nextID=CCC 插 BEFORE_CCC     ⇒ …|XXX|BEFORE_CCC|CCC
+    //
+    //   ⇒ 「插在光标所在块的上面」= 插到**光标块之前** = `nextID = 光标块`。
+    //     旧实现给的是 previousID = 光标块 ⇒ 落到光标块下面，正是用户抱怨的
+    //     「下一个位置」。
+    //
+    //   ★ 命名沿用历史（anchorBlockId），因为它是「光标所在的锚点块」，
+    //     而不再暗示"插到它后面"。下面的分支只决定它进 nextID 还是被丢弃。
+    let anchorBlockId = "";
+    let nextID = "";
 
     // ★ 从锚点元素本身把文档 id 也捞出来 ★
     //   拖拽场景常见：用户在文档 A 里把文件拖到某个块上，
@@ -4342,24 +4702,45 @@ const __mod_embed = (() => {
       if (row) {
         if (!parentID) parentID = row.root_id;
         if (BOXED_TYPES.indexOf(row.type) >= 0) {
-          // 容器块内部不能直接插自定义块 ⇒ 插到容器的父层，位置不带 previousID
+          // ★ 容器块特殊处理（需求5 起语义变化，务必读清）★
+          //
+          //   「容器块」（列表项 l / 引用块 b / 超级块 s / 引述 i / 标题 h /
+          //     表格 t / 标注 callout …）**不能直接当兄弟锚点**：
+          //     它的子块挂在它内部，把 nextID=容器块 插进去会变成
+          //     「插到容器内部的第一个子块之前」，那会破坏容器结构、
+          //     甚至在列表里造出层级错乱。
+          //
+          //   ⇒ 仍然只上移到**容器的父层**，且**不带任何兄弟锚点**
+          //     ⇒ 落点是「容器块之前的那个位置」的表末（即追加到父层末尾）。
+          //
+          //   ⚠️ 这与需求5「插到光标块上面」**不完全一致** —— 是刻意的降级：
+          //     精确到"容器上面"需要「容器的前一个兄弟」当 nextID，
+          //     但容器若是父层的第一个兄弟，就不存在前一个兄弟
+          //     （与 makeEmbedDraggable 里 previousID 的边界问题同源）。
+          //     与其塞一段在边界上会更错的补偿，不如收敛到永远成立的形态。
+          //     待真机验证后，如果用户要更精确，再补「前兄弟的 nextID / 父层头插」。
           parentID = row.parent_id || parentID;
-          previousID = "";
-          dbg.push("blockId 是容器块(" + row.type + ")，上移到 parent=" + parentID);
+          nextID = "";
+          anchorBlockId = "";
+          dbg.push("blockId 是容器块(" + row.type + ")，上移到 parent=" + parentID + "（不带锚点）");
         } else {
-          previousID = blockId;
+          // ★ 需求5 核心：普通块 ⇒ 用 nextID，插到它**之前** ★
+          nextID = blockId;
+          anchorBlockId = blockId;
+          dbg.push("普通块(" + row.type + ") ⇒ nextID=" + blockId + "（插到它之前）");
         }
       } else {
         // 查不到这个块（可能刚被删/索引未到）：退化为插到文档末尾
         dbg.push("blockId=" + blockId + " 查不到，退化为文档级插入");
-        previousID = "";
+        nextID = "";
+        anchorBlockId = "";
         if (!parentID) parentID = docId;
       }
     }
 
     const trace = dbg.join(" | ") +
       " ⇒ parentID=" + (parentID || "(空)") +
-      " previousID=" + (previousID || "(空)") +
+      " nextID=" + (nextID || "(空)") +
       " via=" + (src || "(无)");
     lastLocateTrace = trace;
     try {
@@ -4368,7 +4749,11 @@ const __mod_embed = (() => {
       }
     } catch { /* 忽略 */ }
 
-    return { parentID, previousID, src };
+    // ★ 返回值同时给出 nextID 与 previousID（恒空）★
+    //   previousID 保留在返回结构里是为了**兼容既有调用方/测试**：
+    //   需求5 之后它永远是空串，任何还读它的代码都会走"没有兄弟锚点"的分支
+    //   （= 追加到 parentID 末尾），而不是静默插错位置。
+    return { parentID, nextID, previousID: "", anchorBlockId, src };
   }
 
   /**
@@ -4649,7 +5034,7 @@ const __mod_embed = (() => {
     //   ⇒ 现在改成一失败就报错（返回 false + 明确日志），宁可不插也不插坏。
     let newId = "";
     try {
-      const { parentID, previousID, src } = await locateInsertPoint(protyle, anchorEl);
+      const { parentID, nextID, previousID, src } = await locateInsertPoint(protyle, anchorEl);
       if (!parentID) {
         // ★ 定位失败要说人话，并且要能自证卡在哪一级 ★
         //   历史上这里只写「定位不到插入位置」，用户看到的是「插入失败，请查看
@@ -4670,9 +5055,11 @@ const __mod_embed = (() => {
         err.trace = trace;
         throw err;
       }
-      log(`定位成功：parentID=${parentID} previousID=${previousID || "(无)"} via=${src || "?"}`);
+      log(`定位成功：parentID=${parentID} nextID=${nextID || "(无)"} previousID=${previousID || "(无)"} via=${src || "?"}`);
 
       const body = { dataType: "markdown", data: md, parentID };
+      // ★ 需求5：nextID = 光标所在块 ⇒ 插到它**之前**（= 光标当前位置）★
+      if (nextID) body.nextID = nextID;
       if (previousID) body.previousID = previousID;
 
       const ins = await kb("/api/block/insertBlock", body);
@@ -5425,8 +5812,15 @@ const __mod_tree = (() => {
      *
      * ③ 落点解析交给 `resolveDropBlock(el)`：
      *    el = document.elementFromPoint(x, y) → 往上找最近的 [data-node-id]。
-     *    拿到的是**正文里那个块** ⇒ 插到它后面，这才是「拖哪儿插哪儿」。
+     *    拿到的是**正文里那个块** ⇒ 作为锚点交给插入通道。
      *    拿不到（拖到空白/页面外）⇒ 返回 null，走 locateInsertPoint 的常规兜底。
+     *
+     *    ★ 需求5（2026-09-26）：锚点语义 = 「插到该块**上面**」★
+     *      用户原话：「网盘拖拽插入嵌入块 … 目前都在目前光标下一个位置，
+     *                调整为当前位置插入。」
+     *      落点块元素经 insertEmbedIntoDoc → locateInsertPoint 变成
+     *      `nextID = 落点块`（内核语义：插到它之前），见 embed.js 的说明。
+     *      这里**只负责把元素交出去**，不再自己决定"前/后"。
      *
      * ④ 只有携带我们自定义 MIME 的拖拽才处理。
      *    否则用户从 VS Code / 浏览器拖一段文本进来，也会被我们当成网盘文件。
@@ -5436,12 +5830,59 @@ const __mod_tree = (() => {
       this._dropBound = true;
       const DND_MIME = "application/x-nebuladisk-embed";
 
+      /*
+       * ★★★ 需求①：落点不在笔记正文里 ⇒ 什么都不做（含不提示）★★★
+       *
+       * 用户原话：「网盘文件拖拽不放回到 dock 位置，那就什么都不做。
+       *           也不用提示插入失败。（参照盘绘插件）」
+       *
+       * 为什么必须加这道闸：
+       *   本监听挂在 **document 捕获阶段**，会看到全站的所有拖放 ——
+       *   包括用户把文件拖回右侧 dock（想取消/换个盘再拖）、拖到文件树自己身上、
+       *   拖到工具栏/页签头/页面空白。这些落点都不是「拖进笔记正文」。
+       *
+       * 判据必须是「真实笔记正文」，不能图省事写成 `closest(".protyle-wysiwyg")`：
+       *   思源正文里可能出现**嵌套的 wysiwyg 伪正文**（例如别的插件渲染的
+       *   文档预览块本身带 `protyle-wysiwyg` 且内容含 `data-node-id`），
+       *   用它当判据会误命中 ⇒ 拿到一个**不属于本文档的块 id** 交给内核 ⇒
+       *   内核 `transaction.go doInsert0` 找不到节点 ⇒ **PANIC**。
+       *   （画布插件 2026-09-26 在 NAS 内核日志里实测到过这条崩溃路径：
+       *     `PANIC RECOVERED: invalid memory address or nil pointer dereference`
+       *     ... `Transaction.doInsert0 (transaction.go:1793)`）
+       *
+       * 因此判据收紧为两条同时成立：
+       *   ① 落点在 `.protyle-wysiwyg` 内；
+       *   ② 该 wysiwyg **不是**某个 `.protyle[data-node-id]` 之外的东西 ——
+       *      即它必须能上溯到一个真正的编辑器容器 `.protyle[data-node-id]`。
+       * 这样「伪正文」（挂在插件自己的容器里，上溯不到 .protyle[data-node-id]）
+       * 会被自然排除。
+       *
+       * ★ 只读判断，不 preventDefault ⇒ 不会有 drop 事件 ⇒ 自然「什么都不做」★
+       *   而且不 preventDefault 才让文件树自己的上传逻辑、其它插件能正常收到
+       *   那次 drop（那才是用户丢回 dock 时的本意）。
+       */
+      const resolveNoteEditorBody = (el) => {
+        if (!el || el.nodeType !== 1) return null;
+        try {
+          const body = el.closest ? el.closest(".protyle-wysiwyg") : null;
+          if (!body) return null;
+          // ② 必须能上溯到真正的编辑器容器（.protyle 且带 data-node-id）
+          const host = body.closest ? body.closest(".protyle[data-node-id]") : null;
+          if (!host) return null;
+          return body;
+        } catch { return null; }
+      };
+
       this._onDragOver = (ev) => {
         if (!this._dragging) return;              // 不是我们拖的，完全不干预
         // ★ #55：理论上拖拽源头已不再产出 isDir 载荷（attachEmbedDrag 直接不给
         //   文件夹开 draggable），这里是第二道闸：万一有陈旧载荷，也别显示落点高亮，
         //   否则会给出「松手就能插进去」的假承诺。
         if (this._dragging.isDir) return;
+        // ★★★ 需求①：落点不在正文（拖回 dock / 拖到树上 / 拖到空白）★★★
+        //   直接 return，**不 preventDefault**、**不清高亮之外不做任何事**。
+        //   后面的旧代码会 preventDefault ⇒ 产生 drop ⇒ 触发插入（用户的 bug）。
+        if (!resolveNoteEditorBody(ev.target)) return;
         // ★ 关键：必须 preventDefault，否则不触发 drop ★
         ev.preventDefault();
         try { ev.dataTransfer.dropEffect = "copy"; } catch { /* 某些环境只读 */ }
@@ -5459,6 +5900,20 @@ const __mod_tree = (() => {
 
       this._onDrop = async (ev) => {
         if (!this._dragging) return;
+        // ★★★ 需求①：与 dragover 完全同一道判据（必须一致）★★★
+        //   正常情况下 dragover 已拦住非正文落点（它们不会被 preventDefault，
+        //   因而根本不产生 drop）。这里再判一次是兜底：事件也可能由别处合成派发，
+        //   或 dragover 与 drop 之间光标移到了别处。
+        //   两次判据若不一致，会出现「dragover 放行、drop 却拒绝」的半途状态。
+        if (!resolveNoteEditorBody(ev.target)) {
+          // 静默放弃：不 preventDefault、不 stopPropagation、不提示
+          this._dragging = null;
+          if (this._lastDropBlock) {
+            this._lastDropBlock.classList.remove("nb-drop-target");
+            this._lastDropBlock = null;
+          }
+          return;
+        }
         let payload = null;
         try {
           const raw = ev.dataTransfer.getData(DND_MIME);
@@ -5482,7 +5937,7 @@ const __mod_tree = (() => {
 
         diag(`[tree] drop：${payload.mount}:${payload.path} → 落点块 ${targetEl ? (targetEl.getAttribute("data-node-id") || "无id") : "（未命中，走兜底）"}`);
 
-        // 复用唯一的插入通道；anchorEl 传落点块 ⇒ 先插到它后面
+        // 复用唯一的插入通道；anchorEl 传落点块 ⇒ 插到它**上面**（需求5）
         try {
           // ★ #55：文件夹不再可拖，正常情况走不到这里。
           //   但保留这道闸门 —— 万一有**历史遗留**的 dataTransfer（比如从旧版页面
@@ -6145,21 +6600,137 @@ const __mod_tree = (() => {
         this.treeEl.style.display = "";
       }
       this.treeEl.innerHTML = "";
-      const root = this.makeNode({
-        name: this.currentMount,
+
+      // ★★★ 需求4（2026-09-26）：不再显示「盘根」那一行 ★★★
+      //
+      //   用户原话：「网盘文件树上面选择对应的盘符，下面就不要显示根目录了。」
+      //
+      //   真机截图确认了要删的是哪一行：
+      //     ┌─ 顶部下拉框：售前项目        ← 盘符选择器（保留）
+      //     ├─ 📁 售前项目  ▾            ← ★ 就是这一行，与上一行完全重复
+      //     │   ├─ 📁 0000解密文件
+      //     │   └─ …
+      //
+      //   ⇒ 做法：把**根目录的内容直接铺到树的顶层**，不再先造一个
+      //     `isMountRoot` 的行再展开它。
+      //
+      //   ⚠️ 这里刻意**不再调用 expandNode(root)**，而是复用同一个
+      //     `loadChildrenInto(box, {isMountRoot:true, path:""}, depth)`。
+      //     理由：expandNode 的职责是「给某个**已存在的行**加载并挂子节点」，
+      //     它需要 wrap._row 来加 is-expanded、也需要一个 wrap 来承接
+      //     _loaded/_loading 状态。既然那一行已经不存在，就没有 wrap 可给；
+      //     硬造一个「隐藏的 wrap」会让 restoreExpanded / 折叠逻辑里
+      //     到处都要判断"这个 wrap 是不是隐形的"，那是给未来埋雷。
+      //     ⇒ 抽一个纯加载函数，两处共用，语义各自清晰。
+      //
+      //   ★ 展开状态 key 保持一致 ★
+      //     过去盘根节点的 key 是 nodeKey(mount, "") ⇒ `mount::/`。
+      //     现在这层"内容"仍然登记在同一个 key 下，所以：
+      //       · 收起的语义变成「整棵树的顶层目录」⇒ 顶层目录就是第一层
+      //       · this.expanded 里的历史数据不用迁移（revealPath 依然先 add 它）
+      //     唯一区别：没有那一行可以点，所以"折叠盘根"这个操作自然消失了
+      //     （这正合用户意图 —— 那一行本来就不该存在）。
+      // ★ 注意：this._renderToken 的并发保护由调用方 loadRoot 负责，
+      //   这里只管把这一层的内容渲染出来。
+      await this.loadChildrenInto(this.treeEl, {
+        isMountRoot: true,
         isDir: true,
         path: "",
-        isMountRoot: true,
-      }, 0);
-      this.treeEl.appendChild(root);
-      // 盘根默认展开
-      await this.expandNode(root);
+        name: this.currentMount,
+      }, -1);
       if (token !== this._renderToken) return;
+
       // 恢复上次展开过的目录（迭代实现，见 restoreExpanded）
+      //   ★ 需求4 之后恢复的入口从「盘根 wrap」变成 treeEl 本身 ——
+      //     restoreExpanded 只用了 rootWrap._children 来取第一层子节点，
+      //     所以传 treeEl（它本身就是子节点的容器）语义完全等价。
       if (this.expanded.size) {
-        await this.restoreExpanded(root);
+        await this.restoreExpanded(this.treeEl);
       }
       if (token !== this._renderToken) return;
+    }
+
+    /**
+     * ★★★ 需求4（2026-09-26）新抽出的纯加载函数 ★★★
+     *
+     * 把「某个目录（或盘根）的子条目渲染进 box」这件事从 expandNode 里
+     * 拆出来，让 loadRoot（无盘根行）和 expandNode（有行）两条路径共用。
+     *
+     * ## depth 的语义
+     *   · expandNode 调用时传 `wrap._depth` ⇒ 子节点 depth = _depth + 1
+     *   · loadRoot 调用时传 **-1** ⇒ 子节点 depth = 0（顶层）
+     *   盘根没有可见的行，所以它的"层级"要算在 0 之下，用 -1 表示。
+     *
+     * ## 为什么必须由这里拼 path
+     *   后端 /api/list 的每条 entry **只有**
+     *     { name, isDir, size, mtime, ext, route, mime, readonly }
+     *   —— 没有 path 字段（只有响应顶层带 path，即本次请求的目录）。
+     *   直接用 e 会让每个子节点 entry.path === undefined ⇒ canExpand()
+     *   拒绝（子文件夹点不开）、activateFile() 抛「缺少文件路径参数」。
+     *   ⇒ 用「响应顶层 path（父目录）」+ entry.name 自己合成。
+     *
+     * @param {HTMLElement} box   子节点的挂载容器（treeEl 或某个 .nb-children）
+     * @param {object} dirEntry   目录条目（支持 isMountRoot 标记）
+     * @param {number} parentDepth 父层 depth（盘根传 -1）
+     * @returns {Promise<{ok:boolean, wrap?:object}>} ok=false 表示加载失败/被拒
+     */
+    async loadChildrenInto(box, dirEntry, parentDepth) {
+      const entry = dirEntry;
+      // ★ 闸门复用 canExpand 的判据，不另写一套 ★
+      if (!entry || entry.isDir !== true) return { ok: false };
+      if (entry.isMountRoot !== true) {
+        if (!(typeof entry.path === "string" && entry.path.length > 0)) {
+          return { ok: false };
+        }
+      }
+      const childDepth = parentDepth + 1;
+
+      let data;
+      try {
+        data = await API.list(this.currentMount, entry.isMountRoot ? "" : entry.path);
+      } catch (e) {
+        box.innerHTML = `<div class="nb-node-err" style="padding-left:${
+          6 + childDepth * 14 + 18
+        }px">${escapeHtml(e.message)}</div>`;
+        return { ok: false };
+      }
+      if (this.destroyed) return { ok: false };
+      if (box !== this.treeEl) box.innerHTML = "";
+
+      const entries = (data && data.entries) || [];
+      if (!entries.length) {
+        // 盘根为空时给出更明确的文案（顶层空树看着像坏了）
+        box.innerHTML = `<div class="nb-node-empty" style="padding-left:${
+          6 + childDepth * 14 + 18
+        }px">${entry.isMountRoot ? "（这个盘里没有任何文件）" : "（空）"}</div>`;
+        return { ok: true };
+      }
+
+      // 统一成「不以 / 结尾」，根目录归一成 ""
+      const parentFromData =
+        typeof data.path === "string" && data.path ? data.path : null;
+      const parentRaw =
+        parentFromData !== null
+          ? parentFromData
+          : entry.isMountRoot
+          ? ""
+          : typeof entry.path === "string"
+          ? entry.path
+          : "";
+      const parent =
+        parentRaw.replace(/\/+$/, "") === "" || parentRaw === "/"
+          ? ""
+          : parentRaw.replace(/\/+$/, "");
+
+      for (const e of entries) {
+        if (!e || typeof e.name !== "string" || !e.name) continue;
+        const child = this.makeNode(
+          Object.assign({}, e, { path: parent + "/" + e.name }),
+          childDepth
+        );
+        box.appendChild(child);
+      }
+      return { ok: true, mount: data.mount };
     }
 
     /* =====================================================================
@@ -6502,63 +7073,19 @@ const __mod_tree = (() => {
         6 + (wrap._depth + 1) * 14 + 18
       }px">加载中…</div>`;
 
-      let data;
-      try {
-        data = await API.list(this.currentMount, entry.isMountRoot ? "" : entry.path);
-      } catch (e) {
-        wrap._loading = false;
-        box.innerHTML = `<div class="nb-node-err" style="padding-left:${
-          6 + (wrap._depth + 1) * 14 + 18
-        }px">${escapeHtml(e.message)}</div>`;
-        return;
-      }
+      // ★★★ 需求4（2026-09-26）：加载逻辑已抽到 loadChildrenInto ★★★
+      //   抽出原因：loadRoot 现在**不再创建盘根行**（用户要求下面不显示根目录），
+      //   所以它拿不到 wrap，没法走 expandNode ⇒ 两条路径必须共用同一段加载代码，
+      //   否则「path 拼接 / 错误文案 / 空目录文案」会出现两份，必然漂移。
+      //
+      //   这里保留 wrap 侧的职责（状态标记、_loaded、_mountInfo），
+      //   只把「请求 + 建子节点 DOM」交给 helper。
+      const res = await this.loadChildrenInto(box, entry, wrap._depth);
       wrap._loading = false;
       if (this.destroyed) return;
-
-      box.innerHTML = "";
-      const entries = data.entries || [];
-      if (!entries.length) {
-        box.innerHTML = `<div class="nb-node-empty" style="padding-left:${
-          6 + (wrap._depth + 1) * 14 + 18
-        }px">（空）</div>`;
-      }
-
-      // ★★★ 必须由插件自己拼出子节点的 path ★★★
-      //   后端 /api/list 的每条 entry **只有**
-      //     { name, isDir, size, mtime, ext, route, mime, readonly }
-      //   —— 没有 path 字段（只有响应顶层带 path，即本次请求的目录）。
-      //   旧代码直接把 e 丢给 makeNode，于是每个子节点 entry.path === undefined：
-      //     · canExpand() 拒绝 ⇒ 子文件夹点不开、点开了也点不开第二层；
-      //     · activateFile() 把 undefined 传给 openFile
-      //       ⇒ requireMountPath 抛「缺少文件路径参数（path）」，文件无法预览。
-      //   修正：用「响应顶层 path（父目录）」+ entry.name 自己合成。
-      //   父路径优先用 data.path（后端权威值），拿不到就退回当前节点自己的 path。
-      const parentFromData =
-        typeof data.path === "string" && data.path ? data.path : null;
-      const parentRaw =
-        parentFromData !== null
-          ? parentFromData
-          : entry.isMountRoot
-          ? ""
-          : typeof entry.path === "string"
-          ? entry.path
-          : "";
-      // 统一成「不以 / 结尾」，根目录归一成 ""
-      const parent =
-        parentRaw.replace(/\/+$/, "") === "" || parentRaw === "/"
-          ? ""
-          : parentRaw.replace(/\/+$/, "");
-
-      for (const e of entries) {
-        if (!e || typeof e.name !== "string" || !e.name) continue;
-        const child = this.makeNode(
-          Object.assign({}, e, { path: parent + "/" + e.name }),
-          wrap._depth + 1
-        );
-        box.appendChild(child);
-      }
+      if (!res.ok) return;
       wrap._loaded = true;
-      wrap._mountInfo = data.mount;
+      wrap._mountInfo = res.mount;
 
       // ★ 这里**不再**递归恢复子节点展开状态 ★
       //   旧写法在此处 `for (child of box.children) await this.expandNode(child)`
@@ -6603,12 +7130,28 @@ const __mod_tree = (() => {
       while (queue.length) {
         if (this.destroyed) return;
         const wrap = queue.shift();
-        if (!wrap || !wrap._entry || visited.has(wrap)) continue;
+        if (!wrap || visited.has(wrap)) continue;
         visited.add(wrap);
+
+        // ★★★ 需求4（2026-09-26）：根节点现在可能是**容器**而不是 wrap ★★★
+        //   loadRoot 不再造「盘根行」，所以它把 `this.treeEl` 传进来 ——
+        //   容器没有 `_entry` / `_children`，只有直接子节点（都是 wrap）。
+        //   ⇒ 容器的职责只是「把它下面第一层目录入队」，自己不展开。
+        //   过去这里写 `if (!wrap._entry) continue`，那会把整棵树直接放弃恢复。
+        if (!wrap._entry) {
+          for (const child of Array.from(wrap.children || [])) {
+            if (child && child._entry && child._entry.isDir === true) queue.push(child);
+          }
+          continue;
+        }
+
         if (!this.canExpand(wrap._entry)) continue;
 
         const key = this.nodeKeyOf(wrap._entry);
         // 盘根本身在 loadRoot 里已经展开过，不再重复处理
+        //   ⚠️ 需求4 之后**正常情况下不会再遇到 isMountRoot 的 wrap**
+        //      （它不再被创建）。这段保留是为了兼容 / 防御：
+        //      万一别处（如测试）仍造了盘根节点，行为与改造前一致。
         if (!wrap._entry.isMountRoot && !this.expanded.has(key)) continue;
 
         // 硬上限：防御性闸门。正常一棵树几十个目录，上限设 300 足够宽，
@@ -6647,6 +7190,8 @@ const __mod_tree = (() => {
      *   2) 切到目标 mount（现在树一次只显示一个盘：loadRoot 按 currentMount 取）
      *   3) 把 mount:/各层目录 逐个塞进 this.expanded，再走一次 loadRoot
      *      —— loadRoot → restoreExpanded 会自动把这条路径上的目录全展开
+     *      ★ 需求4 之后树顶不再有「盘根行」，但 `mount::/` 这个 key 依然登记着
+     *        （loadRoot 把第一层铺到顶层时沿用同一个 key 语义），不需要改。
      *   4) 找到最深那层的节点，scrollIntoView + 高亮 + selectRow
      *
      * ★ 为什么用「塞 expanded + 重载」而不是逐层 await expandNode ★
@@ -8615,6 +9160,7 @@ const __mod_index = (() => {
   const API = __mod_api.API;
   const setUnauthorizedHandler = __mod_api.setUnauthorizedHandler;
   const displayMountPath = __mod_api.displayMountPath;
+  const pickViewer = __mod_api.pickViewer;
   const CUSTOM_ICONS = __mod_icons.CUSTOM_ICONS;
   const typeIconEl = __mod_icons.typeIconEl;
   const extOf = __mod_icons.extOf;
@@ -8628,6 +9174,7 @@ const __mod_index = (() => {
   const findParagraphFences = __mod_embed.findParagraphFences;
   const insertEmbedIntoDoc = __mod_embed.insertEmbedIntoDoc;
   const collapseAllOpenEmbeds = __mod_embed.collapseAllOpenEmbeds;
+  const createExternalContract = __mod_external.createExternalContract;
   const NebulaProxy = __mod_proxy.__exports.NebulaProxy;
   const HAS_NODE = __mod_proxy.__exports.HAS_NODE;
   const setDiagFile = __mod_proxy.__exports.setDiagFile;
@@ -8959,6 +9506,28 @@ const __mod_index = (() => {
         // 0.1) 暴露给 src/ 下的模块使用（viewer 需要读网盘地址等设置）
         window.__nebuladiskPlugin = this;
 
+        // 0.2) 挂载对外能力契约 `external`（F-201 定稿，2026-09-24）
+        //
+        //   ★ 用途 ★ 让「其它插件」能消费网盘能力，而**网盘不认识任何消费方**。
+        //     · 契约只描述「我能做什么」：list / stat / search / viewerKind /
+        //       预览地址构造 / 健康检查
+        //     · 绝不描述「谁在调我」—— 这里不出现 canvas / 画布 之类的词（C-5）
+        //     · URL 一律由网盘侧构造（C-4）：后端可能是容器内名（nebula:8088），
+        //       必须经 browserReachableUrl() 改写成浏览器可达地址；
+        //       消费方自己拼必然踩这个坑，所以干脆不暴露地址拼接能力。
+        //     · 方法**不抛异常**穿过边界，统一返回 `{ok, data|error, reason}`；
+        //       reason 严格区分 missing(404) / denied(403) / unreachable(网络)
+        //       —— 否则消费方会把「网盘暂时连不上」误报成「文件被删了」。
+        //
+        //   为什么是「冻结」的：契约一旦挂出就是公开接口，防止被运行时改写。
+        try {
+          this.external = createExternalContract({ API, pickViewer, diag });
+          diag("[external] 对外契约已挂载（version=" + this.external.version + "）");
+        } catch (e) {
+          // 契约挂载失败不能阻断插件自身启动 —— 画布那边会优雅降级
+          diag("[external] 契约挂载失败：" + (e && e.message));
+        }
+
         // 1) 载入设置（要先于代理启动，因为代理需要 serverUrl/port）
         await step("loadSettings", () => this.loadSettings());
 
@@ -9197,6 +9766,13 @@ const __mod_index = (() => {
         this.boot = null;
       }
       if (window.__nebuladiskPlugin === this) {
+        // ★ 必须连 external 一起清 ★
+        //   契约是挂在实例上的，但消费方（画布等）探测的是
+        //   `window.__nebuladiskPlugin.external`。只删单例而留实例引用，
+        //   消费方手上那个陈旧引用仍能调到已卸载插件的 API ⇒ 幽灵请求。
+        try {
+          if (this.external) this.external = null;
+        } catch { /* 冻结对象可能拒绝写入，忽略 */ }
         delete window.__nebuladiskPlugin;
       }
       console.log("[nebuladisk] 已卸载");

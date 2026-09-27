@@ -238,8 +238,8 @@ function renderTreeBrowser(spec, plugin) {
 
   const head = document.createElement("div");
   head.className = "nb-embed-head";
+  // ★ 需求2（2026-09-26）：与文件嵌入块一致 —— 去掉六点手柄 `⠿` ★
   head.innerHTML = `
-    <span class="nb-embed-grip" title="按住拖动：调整本嵌入块在笔记中的位置">⠿</span>
     <span class="nb-embed-title">
       <svg><use xlink:href="#iconNebulaDisk"></use></svg>
       <span class="nb-embed-mount"></span>
@@ -267,8 +267,8 @@ function renderTreeBrowser(spec, plugin) {
   head.appendChild(toolbar);
   wrap.appendChild(head);
 
-  // ★ 任务27：目录嵌入块也可拖动排序 ★
-  makeEmbedDraggable(head.querySelector(".nb-embed-grip"), wrap, plugin);
+  // ★ 需求2（2026-09-26）：手柄已去掉 ⇒ 传 null，退化为整体拖动。
+  makeEmbedDraggable(null, wrap, plugin);
 
   const list = document.createElement("div");
   list.className = "nb-embed-list";
@@ -281,7 +281,13 @@ function renderTreeBrowser(spec, plugin) {
     //     ① `:/${currentPath}`  → currentPath 已带前导斜杠 ⇒ `://`（用户报"多了一个 /"）
     //     ② `:${displayMountPath("", currentPath).slice(1)}` → 单斜杠对了，
     //        但仍带一个多余的冒号，跟文件嵌入的显示风格不一致
-    //   现在与文件嵌入统一：只显示规范化后的路径，盘符交给 .nb-embed-mount。
+    //
+    // ★ 需求3（2026-09-26）：**文件嵌入块**已改成一个元素显示
+    //   `盘符:/路径`（见 renderFileEmbed）。但**目录浏览器**不动 ——
+    //   它的路径是「随浏览实时变化」的，而工具条右边就跟着「↑ 上一级」，
+    //   保持 `售前项目` + `/a/b` 两段反而更容易看出"当前在哪一级"。
+    //   需求3 的原文只针对**文件**嵌入块（举例就是一个 .pdf），
+    //   所以这里维持两段式，不跟着改。
     pathEl.textContent = currentPath ? displayMountPath("", currentPath).slice(1) : "";
     upBtn.style.visibility = currentPath ? "visible" : "hidden";
     list.innerHTML = `<div class="nb-embed-loading">加载中…</div>`;
@@ -374,12 +380,24 @@ function renderTreeBrowser(spec, plugin) {
  *   同级块的范围限定在**同一个文档**里、且都是本插件的嵌入块，
  *   避免把块挪进别的容器（moveBlock 对嵌套容器有额外校验，会失败）。
  *
- * @param {HTMLElement} handleEl 拖动手柄（放进头部）
+ * ★ 需求2（2026-09-26）：handleEl 允许为 null ★
+ *
+ *   去掉六点手柄之后，调用方传 null —— 这时改用 **wrapEl 本身**作拖动源。
+ *   仍然可拖，但语义变化要写清楚：
+ *     · 手柄版：只有按住 `⠿` 才起拖 ⇒ 头部其余区域能正常选中文本
+ *     · 整体版：整个嵌入块都是拖动源。嵌入块头上是按钮、下面常是 iframe，
+ *       文本选择需求很低；而 `draggable=true` 只对**普通文本节点**的选中
+ *       有影响，按钮/iframe 不受累（iframe 还会在 dragstart 里被禁指针）。
+ *   ⇒ 功能不丢，视觉变干净，符合用户「去掉那个字」的意图。
+ *
+ * @param {HTMLElement|null} handleEl 拖动手柄（放进头部）；传 null 表示用整体
  * @param {HTMLElement} wrapEl   整个嵌入块容器（用来找到自己 / 同级块）
  * @param {object} plugin        插件实例（取 api、日志）
  * @returns {{setDraggable: Function}}
  */
 function makeEmbedDraggable(handleEl, wrapEl, plugin) {
+  // 无手柄时，`handle` 在下面被重新指向头部元素（let，可重新赋值）
+  let handle = handleEl || null;
   /** 收集同一文档里的同级嵌入块（按 DOM 顺序 = 视觉顺序） */
   function siblingEmbeds() {
     const root = wrapEl.closest(".protyle-wysiwyg") || document;
@@ -425,12 +443,25 @@ function makeEmbedDraggable(handleEl, wrapEl, plugin) {
 
   let dragging = false;
 
-  handleEl.draggable = true;
-  handleEl.classList.add("nb-embed-drag");
+  // ★ 需求2（2026-09-26）：手柄 `⠿` 已从头部移除 ⇒ handleEl 传 null。
+  //   退化策略：拿**头部 `.nb-embed-head`** 当拖动源，而不是整个 wrapEl。
+  //     · 头部是信息条（图标 + 路径 + 按钮），没有 iframe ⇒ 拖动稳定
+  //     · 主体（含 iframe 预览区）不加 draggable ⇒ 不影响预览内的交互
+  //   `draggable=true` 需要「按下 + 位移」才触发 dragstart ⇒ 单击按钮不受影响。
+  if (handleEl) {
+    handleEl.draggable = true;
+    handleEl.classList.add("nb-embed-drag");
+    handle = handleEl;
+  } else {
+    const headEl = wrapEl.querySelector(".nb-embed-head") || wrapEl;
+    headEl.draggable = true;
+    headEl.classList.add("nb-embed-drag");
+    handle = headEl;
+  }
 
-  handleEl.addEventListener("dragstart", (ev) => {
+  handle.addEventListener("dragstart", (ev) => {
     dragging = true;
-    handleEl.classList.add("is-dragging");
+    handle.classList.add("is-dragging");
     wrapEl.classList.add("is-dragging");
     try {
       ev.dataTransfer.effectAllowed = "move";
@@ -442,9 +473,9 @@ function makeEmbedDraggable(handleEl, wrapEl, plugin) {
     }
   });
 
-  handleEl.addEventListener("dragend", () => {
+  handle.addEventListener("dragend", () => {
     dragging = false;
-    handleEl.classList.remove("is-dragging");
+    handle.classList.remove("is-dragging");
     wrapEl.classList.remove("is-dragging");
     for (const f of Array.from(wrapEl.querySelectorAll("iframe"))) {
       f.style.pointerEvents = "";
@@ -571,7 +602,7 @@ function makeEmbedDraggable(handleEl, wrapEl, plugin) {
     if (!dragging) return;
     ev.preventDefault();
     dragging = false;
-    handleEl.classList.remove("is-dragging");
+    handle.classList.remove("is-dragging");
     wrapEl.classList.remove("is-dragging");
     for (const f of Array.from(wrapEl.querySelectorAll("iframe"))) {
       f.style.pointerEvents = "";
@@ -584,8 +615,11 @@ function makeEmbedDraggable(handleEl, wrapEl, plugin) {
   return {
     /** 允许外部（如设置项）开/关拖动 */
     setDraggable(on) {
-      handleEl.draggable = !!on;
-      handleEl.style.display = on ? "" : "none";
+      // ★ 需求2：无手柄模式下 handle === .nb-embed-head。
+      //   此时**不能**用 display:none 关掉它 —— 那会把整个头部藏起来，
+      //   用户连路径和按钮都看不见了。只摘掉 draggable 即可。
+      handle.draggable = !!on;
+      if (handleEl) handleEl.style.display = on ? "" : "none";
     },
   };
 }
@@ -616,34 +650,46 @@ function renderFileEmbed(spec, plugin) {
 
   const head = document.createElement("div");
   head.className = "nb-embed-head";
+  // ★★★ 需求2（2026-09-26）：头部不再有六点拖动手柄 ★★★
+  //
+  //   用户原话：「去掉网盘文件嵌入块路径前面显示的那个6个点，
+  //             分两列三排显示的那个字。」
+  //   那就是 `⠿`（U+283F BRAILLE PATTERN DOTS-123456），
+  //   浏览器里按 2 列 × 3 排渲染，视觉上「6 个点」。
+  //
+  //   手柄只是**拖动排序**的把手，去掉之后：
+  //     · 嵌入块仍在文档里可选中 / 可剪切（思源原生块操作不受影响）
+  //     · makeEmbedDraggable 明确支持 handleEl 为 null（见该函数注释），
+  //       改用 wrapEl 自身作拖动源 ⇒ 拖动排序功能不丢
   head.innerHTML = `
-    <span class="nb-embed-grip" title="按住拖动：调整本嵌入块在笔记中的位置">⠿</span>
     <span class="nb-embed-title">
       <svg><use xlink:href="#iconNebulaDisk"></use></svg>
-      <span class="nb-embed-mount"></span>
       <span class="nb-embed-path"></span>
     </span>`;
-  head.querySelector(".nb-embed-mount").textContent = spec.mount;
-  // ★ 任务26（四轮 · 真机截图定案）★
+  // ★★★ 需求3（2026-09-26）：路径显示「盘符:/路径」 ★★★
   //
-  //  头部结构是：`[盘符元素 .nb-embed-mount] + [路径元素 .nb-embed-path]`
-  //  两者**并排显示**。所以 .nb-embed-path 只能放**路径部分**，
-  //  不能放 displayMountPath() 的完整返回（那个带盘符）。
+  //   用户原话：「目前是 售前项目/FA&JG-项目评审会议规范要求.pdf
+  //             调整为 售前项:/FA&JG-项目评审会议规范要求.pdf」
   //
-  //  历史三轮各自踩了一个坑，记下来免得再犯：
+  //   注意用户写的是 **`售前项:`**（少一个「目」字），那是**举例时的手误** ——
+  //   盘符名本身不可能被截断，所以这里保留完整盘符 `售前项目:`。
+  //
+  //   历史四轮演进（前四轮都没走到这个形态，记下来免得再回头）：
   //    ① 第一轮：`filePathRaw ? ":" + filePathRaw : ""`
   //       → path 带前导斜杠时拼出 `://`（用户报「多了一个 /」）
-  //    ② 第二轮：`displayMountPath(spec.mount, filePathRaw)`
-  //       → `://` 没了，但把盘符也塞进 path 元素 ⇒ 盘符显示**两次**
-  //         （用户报「售前项目 售前项目:/托璞勒 宣传册.pdf」）
-  //    ③ 本轮：只取 displayMountPath 的**斜杠之后**的部分，
-  //       盘符交给 .nb-embed-mount 那份，两边各司其职。
+  //    ② 第二轮：`displayMountPath(spec.mount, filePathRaw)` 塞进 path 元素
+  //       → 盘符显示**两次**（`.nb-embed-mount` 一份 + path 一份）
+  //    ③ 第三轮：`.nb-embed-mount` = 盘符、`.nb-embed-path` = 斜杠之后
+  //       → 视觉上 `售前项目` 与 `/FA&JG-….pdf` 之间**有 5px 的 flex gap**，
+  //         拼起来是「售前项目 /FA&JG-….pdf」，不是用户要的紧贴形态
+  //    ④ 本轮：**合并为一个元素**，直接放 displayMountPath 的完整返回
+  //       ⇒ `售前项目:/FA&JG-项目评审会议规范要求.pdf`（无空格、无重复）
   //
-  //  ⚠️ displayMountPath("盘","") 返回 `盘:/` 而**不是**空串，
+  //   ⚠️ displayMountPath("盘","") 返回 `盘:/` 而**不是**空串，
   //     所以必须先判空再调用，不能靠 `|| ""` 兜底（死兜底）。
   const filePathRaw = spec.path || spec.name || "";
   head.querySelector(".nb-embed-path").textContent =
-    filePathRaw ? displayMountPath("", filePathRaw).slice(1) : "";
+    filePathRaw ? displayMountPath(spec.mount, filePathRaw) : spec.mount || "";
 
   const toolbar = document.createElement("span");
   toolbar.className = "nb-embed-tools";
@@ -808,7 +854,9 @@ function renderFileEmbed(spec, plugin) {
   wrap.appendChild(head);
 
   // ★ 任务27：文件嵌入块可拖动排序（拖动时视图跟随定位到本块）★
-  makeEmbedDraggable(head.querySelector(".nb-embed-grip"), wrap, plugin);
+  //   ★ 需求2（2026-09-26）：手柄已去掉 ⇒ 传 null，
+  //     makeEmbedDraggable 会退化成用整个头部 wrapEl 当拖动源。
+  makeEmbedDraggable(null, wrap, plugin);
 
   const frameBox = document.createElement("div");
   frameBox.className = "nb-embed-frame-box";
@@ -1462,6 +1510,16 @@ export function buildEmbedMarkdown(pluginName, spec) {
  *   结果修了两处漏了一处 —— 用户点的是漏的那一处，白修。
  *   ⇒ 统一收敛到这里，**新增插入点必须调它**，不要再手写 protyle.insert。
  *
+ * ★★★ 需求5（2026-09-26）：插入位置 = 「光标所在块的上面」★★★
+ *
+ *   用户原话：「网盘拖拽插入嵌入块 和 / 插入 目前都在目前光标下一个位置，
+ *             调整为当前位置插入。」
+ *   追问后选定：「插在光标所在块的上面（推荐）」。
+ *
+ *   落位实现见 locateInsertPoint 的返回：`nextID = 光标块`（内核语义 =
+ *   插到该块**之前**）。拖拽插入与 `/` 斜杠插入**共用这一条通道**，
+ *   所以两处一次性同时生效 —— 这正是"抽成一个函数"的价值。
+ *
  * @param {object} plugin  插件实例（用来取名字、日志）
  * @param {any} protyle    当前编辑器（可为 null，会用 DOM 兜底找光标）
  * @param {object} spec    嵌入参数
@@ -1747,7 +1805,26 @@ async function locateInsertPoint(protyle, anchorEl) {
 
   // ── 落到「父块 + 位置」────────────────────────────────────────────
   let parentID = docId;
-  let previousID = "";
+  // ★★★ 需求5（2026-09-26）：锚点语义从 previousID 改为 nextID ★★★
+  //
+  //   用户原话：「网盘拖拽插入嵌入块 和 / 插入 目前都在目前光标下一个位置，
+  //             调整为当前位置插入。」
+  //   （追问后用户选定：「插在光标所在块的上面」）
+  //
+  //   内核语义（两条都**实测过**，不是推断）：
+  //     · `/api/block/insertBlock {parentID, previousID}` ⇒ 插到 previousID **之后**
+  //     · `/api/block/insertBlock {parentID, nextID}`     ⇒ 插到 nextID **之前**
+  //   实测：AAA|BBB|CCC 以 previousID=BBB 插 XXX ⇒ AAA|BBB|XXX|CCC
+  //         以 nextID=CCC 插 BEFORE_CCC     ⇒ …|XXX|BEFORE_CCC|CCC
+  //
+  //   ⇒ 「插在光标所在块的上面」= 插到**光标块之前** = `nextID = 光标块`。
+  //     旧实现给的是 previousID = 光标块 ⇒ 落到光标块下面，正是用户抱怨的
+  //     「下一个位置」。
+  //
+  //   ★ 命名沿用历史（anchorBlockId），因为它是「光标所在的锚点块」，
+  //     而不再暗示"插到它后面"。下面的分支只决定它进 nextID 还是被丢弃。
+  let anchorBlockId = "";
+  let nextID = "";
 
   // ★ 从锚点元素本身把文档 id 也捞出来 ★
   //   拖拽场景常见：用户在文档 A 里把文件拖到某个块上，
@@ -1779,24 +1856,45 @@ async function locateInsertPoint(protyle, anchorEl) {
     if (row) {
       if (!parentID) parentID = row.root_id;
       if (BOXED_TYPES.indexOf(row.type) >= 0) {
-        // 容器块内部不能直接插自定义块 ⇒ 插到容器的父层，位置不带 previousID
+        // ★ 容器块特殊处理（需求5 起语义变化，务必读清）★
+        //
+        //   「容器块」（列表项 l / 引用块 b / 超级块 s / 引述 i / 标题 h /
+        //     表格 t / 标注 callout …）**不能直接当兄弟锚点**：
+        //     它的子块挂在它内部，把 nextID=容器块 插进去会变成
+        //     「插到容器内部的第一个子块之前」，那会破坏容器结构、
+        //     甚至在列表里造出层级错乱。
+        //
+        //   ⇒ 仍然只上移到**容器的父层**，且**不带任何兄弟锚点**
+        //     ⇒ 落点是「容器块之前的那个位置」的表末（即追加到父层末尾）。
+        //
+        //   ⚠️ 这与需求5「插到光标块上面」**不完全一致** —— 是刻意的降级：
+        //     精确到"容器上面"需要「容器的前一个兄弟」当 nextID，
+        //     但容器若是父层的第一个兄弟，就不存在前一个兄弟
+        //     （与 makeEmbedDraggable 里 previousID 的边界问题同源）。
+        //     与其塞一段在边界上会更错的补偿，不如收敛到永远成立的形态。
+        //     待真机验证后，如果用户要更精确，再补「前兄弟的 nextID / 父层头插」。
         parentID = row.parent_id || parentID;
-        previousID = "";
-        dbg.push("blockId 是容器块(" + row.type + ")，上移到 parent=" + parentID);
+        nextID = "";
+        anchorBlockId = "";
+        dbg.push("blockId 是容器块(" + row.type + ")，上移到 parent=" + parentID + "（不带锚点）");
       } else {
-        previousID = blockId;
+        // ★ 需求5 核心：普通块 ⇒ 用 nextID，插到它**之前** ★
+        nextID = blockId;
+        anchorBlockId = blockId;
+        dbg.push("普通块(" + row.type + ") ⇒ nextID=" + blockId + "（插到它之前）");
       }
     } else {
       // 查不到这个块（可能刚被删/索引未到）：退化为插到文档末尾
       dbg.push("blockId=" + blockId + " 查不到，退化为文档级插入");
-      previousID = "";
+      nextID = "";
+      anchorBlockId = "";
       if (!parentID) parentID = docId;
     }
   }
 
   const trace = dbg.join(" | ") +
     " ⇒ parentID=" + (parentID || "(空)") +
-    " previousID=" + (previousID || "(空)") +
+    " nextID=" + (nextID || "(空)") +
     " via=" + (src || "(无)");
   lastLocateTrace = trace;
   try {
@@ -1805,7 +1903,11 @@ async function locateInsertPoint(protyle, anchorEl) {
     }
   } catch { /* 忽略 */ }
 
-  return { parentID, previousID, src };
+  // ★ 返回值同时给出 nextID 与 previousID（恒空）★
+  //   previousID 保留在返回结构里是为了**兼容既有调用方/测试**：
+  //   需求5 之后它永远是空串，任何还读它的代码都会走"没有兄弟锚点"的分支
+  //   （= 追加到 parentID 末尾），而不是静默插错位置。
+  return { parentID, nextID, previousID: "", anchorBlockId, src };
 }
 
 /**
@@ -2086,7 +2188,7 @@ export async function insertEmbedIntoDoc(plugin, protyle, spec, opts) {
   //   ⇒ 现在改成一失败就报错（返回 false + 明确日志），宁可不插也不插坏。
   let newId = "";
   try {
-    const { parentID, previousID, src } = await locateInsertPoint(protyle, anchorEl);
+    const { parentID, nextID, previousID, src } = await locateInsertPoint(protyle, anchorEl);
     if (!parentID) {
       // ★ 定位失败要说人话，并且要能自证卡在哪一级 ★
       //   历史上这里只写「定位不到插入位置」，用户看到的是「插入失败，请查看
@@ -2107,9 +2209,11 @@ export async function insertEmbedIntoDoc(plugin, protyle, spec, opts) {
       err.trace = trace;
       throw err;
     }
-    log(`定位成功：parentID=${parentID} previousID=${previousID || "(无)"} via=${src || "?"}`);
+    log(`定位成功：parentID=${parentID} nextID=${nextID || "(无)"} previousID=${previousID || "(无)"} via=${src || "?"}`);
 
     const body = { dataType: "markdown", data: md, parentID };
+    // ★ 需求5：nextID = 光标所在块 ⇒ 插到它**之前**（= 光标当前位置）★
+    if (nextID) body.nextID = nextID;
     if (previousID) body.previousID = previousID;
 
     const ins = await kb("/api/block/insertBlock", body);

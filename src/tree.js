@@ -179,8 +179,15 @@ export class FileTree {
    *
    * ③ 落点解析交给 `resolveDropBlock(el)`：
    *    el = document.elementFromPoint(x, y) → 往上找最近的 [data-node-id]。
-   *    拿到的是**正文里那个块** ⇒ 插到它后面，这才是「拖哪儿插哪儿」。
+   *    拿到的是**正文里那个块** ⇒ 作为锚点交给插入通道。
    *    拿不到（拖到空白/页面外）⇒ 返回 null，走 locateInsertPoint 的常规兜底。
+   *
+   *    ★ 需求5（2026-09-26）：锚点语义 = 「插到该块**上面**」★
+   *      用户原话：「网盘拖拽插入嵌入块 … 目前都在目前光标下一个位置，
+   *                调整为当前位置插入。」
+   *      落点块元素经 insertEmbedIntoDoc → locateInsertPoint 变成
+   *      `nextID = 落点块`（内核语义：插到它之前），见 embed.js 的说明。
+   *      这里**只负责把元素交出去**，不再自己决定"前/后"。
    *
    * ④ 只有携带我们自定义 MIME 的拖拽才处理。
    *    否则用户从 VS Code / 浏览器拖一段文本进来，也会被我们当成网盘文件。
@@ -190,12 +197,59 @@ export class FileTree {
     this._dropBound = true;
     const DND_MIME = "application/x-nebuladisk-embed";
 
+    /*
+     * ★★★ 需求①：落点不在笔记正文里 ⇒ 什么都不做（含不提示）★★★
+     *
+     * 用户原话：「网盘文件拖拽不放回到 dock 位置，那就什么都不做。
+     *           也不用提示插入失败。（参照盘绘插件）」
+     *
+     * 为什么必须加这道闸：
+     *   本监听挂在 **document 捕获阶段**，会看到全站的所有拖放 ——
+     *   包括用户把文件拖回右侧 dock（想取消/换个盘再拖）、拖到文件树自己身上、
+     *   拖到工具栏/页签头/页面空白。这些落点都不是「拖进笔记正文」。
+     *
+     * 判据必须是「真实笔记正文」，不能图省事写成 `closest(".protyle-wysiwyg")`：
+     *   思源正文里可能出现**嵌套的 wysiwyg 伪正文**（例如别的插件渲染的
+     *   文档预览块本身带 `protyle-wysiwyg` 且内容含 `data-node-id`），
+     *   用它当判据会误命中 ⇒ 拿到一个**不属于本文档的块 id** 交给内核 ⇒
+     *   内核 `transaction.go doInsert0` 找不到节点 ⇒ **PANIC**。
+     *   （画布插件 2026-09-26 在 NAS 内核日志里实测到过这条崩溃路径：
+     *     `PANIC RECOVERED: invalid memory address or nil pointer dereference`
+     *     ... `Transaction.doInsert0 (transaction.go:1793)`）
+     *
+     * 因此判据收紧为两条同时成立：
+     *   ① 落点在 `.protyle-wysiwyg` 内；
+     *   ② 该 wysiwyg **不是**某个 `.protyle[data-node-id]` 之外的东西 ——
+     *      即它必须能上溯到一个真正的编辑器容器 `.protyle[data-node-id]`。
+     * 这样「伪正文」（挂在插件自己的容器里，上溯不到 .protyle[data-node-id]）
+     * 会被自然排除。
+     *
+     * ★ 只读判断，不 preventDefault ⇒ 不会有 drop 事件 ⇒ 自然「什么都不做」★
+     *   而且不 preventDefault 才让文件树自己的上传逻辑、其它插件能正常收到
+     *   那次 drop（那才是用户丢回 dock 时的本意）。
+     */
+    const resolveNoteEditorBody = (el) => {
+      if (!el || el.nodeType !== 1) return null;
+      try {
+        const body = el.closest ? el.closest(".protyle-wysiwyg") : null;
+        if (!body) return null;
+        // ② 必须能上溯到真正的编辑器容器（.protyle 且带 data-node-id）
+        const host = body.closest ? body.closest(".protyle[data-node-id]") : null;
+        if (!host) return null;
+        return body;
+      } catch { return null; }
+    };
+
     this._onDragOver = (ev) => {
       if (!this._dragging) return;              // 不是我们拖的，完全不干预
       // ★ #55：理论上拖拽源头已不再产出 isDir 载荷（attachEmbedDrag 直接不给
       //   文件夹开 draggable），这里是第二道闸：万一有陈旧载荷，也别显示落点高亮，
       //   否则会给出「松手就能插进去」的假承诺。
       if (this._dragging.isDir) return;
+      // ★★★ 需求①：落点不在正文（拖回 dock / 拖到树上 / 拖到空白）★★★
+      //   直接 return，**不 preventDefault**、**不清高亮之外不做任何事**。
+      //   后面的旧代码会 preventDefault ⇒ 产生 drop ⇒ 触发插入（用户的 bug）。
+      if (!resolveNoteEditorBody(ev.target)) return;
       // ★ 关键：必须 preventDefault，否则不触发 drop ★
       ev.preventDefault();
       try { ev.dataTransfer.dropEffect = "copy"; } catch { /* 某些环境只读 */ }
@@ -213,6 +267,20 @@ export class FileTree {
 
     this._onDrop = async (ev) => {
       if (!this._dragging) return;
+      // ★★★ 需求①：与 dragover 完全同一道判据（必须一致）★★★
+      //   正常情况下 dragover 已拦住非正文落点（它们不会被 preventDefault，
+      //   因而根本不产生 drop）。这里再判一次是兜底：事件也可能由别处合成派发，
+      //   或 dragover 与 drop 之间光标移到了别处。
+      //   两次判据若不一致，会出现「dragover 放行、drop 却拒绝」的半途状态。
+      if (!resolveNoteEditorBody(ev.target)) {
+        // 静默放弃：不 preventDefault、不 stopPropagation、不提示
+        this._dragging = null;
+        if (this._lastDropBlock) {
+          this._lastDropBlock.classList.remove("nb-drop-target");
+          this._lastDropBlock = null;
+        }
+        return;
+      }
       let payload = null;
       try {
         const raw = ev.dataTransfer.getData(DND_MIME);
@@ -236,7 +304,7 @@ export class FileTree {
 
       diag(`[tree] drop：${payload.mount}:${payload.path} → 落点块 ${targetEl ? (targetEl.getAttribute("data-node-id") || "无id") : "（未命中，走兜底）"}`);
 
-      // 复用唯一的插入通道；anchorEl 传落点块 ⇒ 先插到它后面
+      // 复用唯一的插入通道；anchorEl 传落点块 ⇒ 插到它**上面**（需求5）
       try {
         // ★ #55：文件夹不再可拖，正常情况走不到这里。
         //   但保留这道闸门 —— 万一有**历史遗留**的 dataTransfer（比如从旧版页面
@@ -899,21 +967,137 @@ export class FileTree {
       this.treeEl.style.display = "";
     }
     this.treeEl.innerHTML = "";
-    const root = this.makeNode({
-      name: this.currentMount,
+
+    // ★★★ 需求4（2026-09-26）：不再显示「盘根」那一行 ★★★
+    //
+    //   用户原话：「网盘文件树上面选择对应的盘符，下面就不要显示根目录了。」
+    //
+    //   真机截图确认了要删的是哪一行：
+    //     ┌─ 顶部下拉框：售前项目        ← 盘符选择器（保留）
+    //     ├─ 📁 售前项目  ▾            ← ★ 就是这一行，与上一行完全重复
+    //     │   ├─ 📁 0000解密文件
+    //     │   └─ …
+    //
+    //   ⇒ 做法：把**根目录的内容直接铺到树的顶层**，不再先造一个
+    //     `isMountRoot` 的行再展开它。
+    //
+    //   ⚠️ 这里刻意**不再调用 expandNode(root)**，而是复用同一个
+    //     `loadChildrenInto(box, {isMountRoot:true, path:""}, depth)`。
+    //     理由：expandNode 的职责是「给某个**已存在的行**加载并挂子节点」，
+    //     它需要 wrap._row 来加 is-expanded、也需要一个 wrap 来承接
+    //     _loaded/_loading 状态。既然那一行已经不存在，就没有 wrap 可给；
+    //     硬造一个「隐藏的 wrap」会让 restoreExpanded / 折叠逻辑里
+    //     到处都要判断"这个 wrap 是不是隐形的"，那是给未来埋雷。
+    //     ⇒ 抽一个纯加载函数，两处共用，语义各自清晰。
+    //
+    //   ★ 展开状态 key 保持一致 ★
+    //     过去盘根节点的 key 是 nodeKey(mount, "") ⇒ `mount::/`。
+    //     现在这层"内容"仍然登记在同一个 key 下，所以：
+    //       · 收起的语义变成「整棵树的顶层目录」⇒ 顶层目录就是第一层
+    //       · this.expanded 里的历史数据不用迁移（revealPath 依然先 add 它）
+    //     唯一区别：没有那一行可以点，所以"折叠盘根"这个操作自然消失了
+    //     （这正合用户意图 —— 那一行本来就不该存在）。
+    // ★ 注意：this._renderToken 的并发保护由调用方 loadRoot 负责，
+    //   这里只管把这一层的内容渲染出来。
+    await this.loadChildrenInto(this.treeEl, {
+      isMountRoot: true,
       isDir: true,
       path: "",
-      isMountRoot: true,
-    }, 0);
-    this.treeEl.appendChild(root);
-    // 盘根默认展开
-    await this.expandNode(root);
+      name: this.currentMount,
+    }, -1);
     if (token !== this._renderToken) return;
+
     // 恢复上次展开过的目录（迭代实现，见 restoreExpanded）
+    //   ★ 需求4 之后恢复的入口从「盘根 wrap」变成 treeEl 本身 ——
+    //     restoreExpanded 只用了 rootWrap._children 来取第一层子节点，
+    //     所以传 treeEl（它本身就是子节点的容器）语义完全等价。
     if (this.expanded.size) {
-      await this.restoreExpanded(root);
+      await this.restoreExpanded(this.treeEl);
     }
     if (token !== this._renderToken) return;
+  }
+
+  /**
+   * ★★★ 需求4（2026-09-26）新抽出的纯加载函数 ★★★
+   *
+   * 把「某个目录（或盘根）的子条目渲染进 box」这件事从 expandNode 里
+   * 拆出来，让 loadRoot（无盘根行）和 expandNode（有行）两条路径共用。
+   *
+   * ## depth 的语义
+   *   · expandNode 调用时传 `wrap._depth` ⇒ 子节点 depth = _depth + 1
+   *   · loadRoot 调用时传 **-1** ⇒ 子节点 depth = 0（顶层）
+   *   盘根没有可见的行，所以它的"层级"要算在 0 之下，用 -1 表示。
+   *
+   * ## 为什么必须由这里拼 path
+   *   后端 /api/list 的每条 entry **只有**
+   *     { name, isDir, size, mtime, ext, route, mime, readonly }
+   *   —— 没有 path 字段（只有响应顶层带 path，即本次请求的目录）。
+   *   直接用 e 会让每个子节点 entry.path === undefined ⇒ canExpand()
+   *   拒绝（子文件夹点不开）、activateFile() 抛「缺少文件路径参数」。
+   *   ⇒ 用「响应顶层 path（父目录）」+ entry.name 自己合成。
+   *
+   * @param {HTMLElement} box   子节点的挂载容器（treeEl 或某个 .nb-children）
+   * @param {object} dirEntry   目录条目（支持 isMountRoot 标记）
+   * @param {number} parentDepth 父层 depth（盘根传 -1）
+   * @returns {Promise<{ok:boolean, wrap?:object}>} ok=false 表示加载失败/被拒
+   */
+  async loadChildrenInto(box, dirEntry, parentDepth) {
+    const entry = dirEntry;
+    // ★ 闸门复用 canExpand 的判据，不另写一套 ★
+    if (!entry || entry.isDir !== true) return { ok: false };
+    if (entry.isMountRoot !== true) {
+      if (!(typeof entry.path === "string" && entry.path.length > 0)) {
+        return { ok: false };
+      }
+    }
+    const childDepth = parentDepth + 1;
+
+    let data;
+    try {
+      data = await API.list(this.currentMount, entry.isMountRoot ? "" : entry.path);
+    } catch (e) {
+      box.innerHTML = `<div class="nb-node-err" style="padding-left:${
+        6 + childDepth * 14 + 18
+      }px">${escapeHtml(e.message)}</div>`;
+      return { ok: false };
+    }
+    if (this.destroyed) return { ok: false };
+    if (box !== this.treeEl) box.innerHTML = "";
+
+    const entries = (data && data.entries) || [];
+    if (!entries.length) {
+      // 盘根为空时给出更明确的文案（顶层空树看着像坏了）
+      box.innerHTML = `<div class="nb-node-empty" style="padding-left:${
+        6 + childDepth * 14 + 18
+      }px">${entry.isMountRoot ? "（这个盘里没有任何文件）" : "（空）"}</div>`;
+      return { ok: true };
+    }
+
+    // 统一成「不以 / 结尾」，根目录归一成 ""
+    const parentFromData =
+      typeof data.path === "string" && data.path ? data.path : null;
+    const parentRaw =
+      parentFromData !== null
+        ? parentFromData
+        : entry.isMountRoot
+        ? ""
+        : typeof entry.path === "string"
+        ? entry.path
+        : "";
+    const parent =
+      parentRaw.replace(/\/+$/, "") === "" || parentRaw === "/"
+        ? ""
+        : parentRaw.replace(/\/+$/, "");
+
+    for (const e of entries) {
+      if (!e || typeof e.name !== "string" || !e.name) continue;
+      const child = this.makeNode(
+        Object.assign({}, e, { path: parent + "/" + e.name }),
+        childDepth
+      );
+      box.appendChild(child);
+    }
+    return { ok: true, mount: data.mount };
   }
 
   /* =====================================================================
@@ -1256,63 +1440,19 @@ export class FileTree {
       6 + (wrap._depth + 1) * 14 + 18
     }px">加载中…</div>`;
 
-    let data;
-    try {
-      data = await API.list(this.currentMount, entry.isMountRoot ? "" : entry.path);
-    } catch (e) {
-      wrap._loading = false;
-      box.innerHTML = `<div class="nb-node-err" style="padding-left:${
-        6 + (wrap._depth + 1) * 14 + 18
-      }px">${escapeHtml(e.message)}</div>`;
-      return;
-    }
+    // ★★★ 需求4（2026-09-26）：加载逻辑已抽到 loadChildrenInto ★★★
+    //   抽出原因：loadRoot 现在**不再创建盘根行**（用户要求下面不显示根目录），
+    //   所以它拿不到 wrap，没法走 expandNode ⇒ 两条路径必须共用同一段加载代码，
+    //   否则「path 拼接 / 错误文案 / 空目录文案」会出现两份，必然漂移。
+    //
+    //   这里保留 wrap 侧的职责（状态标记、_loaded、_mountInfo），
+    //   只把「请求 + 建子节点 DOM」交给 helper。
+    const res = await this.loadChildrenInto(box, entry, wrap._depth);
     wrap._loading = false;
     if (this.destroyed) return;
-
-    box.innerHTML = "";
-    const entries = data.entries || [];
-    if (!entries.length) {
-      box.innerHTML = `<div class="nb-node-empty" style="padding-left:${
-        6 + (wrap._depth + 1) * 14 + 18
-      }px">（空）</div>`;
-    }
-
-    // ★★★ 必须由插件自己拼出子节点的 path ★★★
-    //   后端 /api/list 的每条 entry **只有**
-    //     { name, isDir, size, mtime, ext, route, mime, readonly }
-    //   —— 没有 path 字段（只有响应顶层带 path，即本次请求的目录）。
-    //   旧代码直接把 e 丢给 makeNode，于是每个子节点 entry.path === undefined：
-    //     · canExpand() 拒绝 ⇒ 子文件夹点不开、点开了也点不开第二层；
-    //     · activateFile() 把 undefined 传给 openFile
-    //       ⇒ requireMountPath 抛「缺少文件路径参数（path）」，文件无法预览。
-    //   修正：用「响应顶层 path（父目录）」+ entry.name 自己合成。
-    //   父路径优先用 data.path（后端权威值），拿不到就退回当前节点自己的 path。
-    const parentFromData =
-      typeof data.path === "string" && data.path ? data.path : null;
-    const parentRaw =
-      parentFromData !== null
-        ? parentFromData
-        : entry.isMountRoot
-        ? ""
-        : typeof entry.path === "string"
-        ? entry.path
-        : "";
-    // 统一成「不以 / 结尾」，根目录归一成 ""
-    const parent =
-      parentRaw.replace(/\/+$/, "") === "" || parentRaw === "/"
-        ? ""
-        : parentRaw.replace(/\/+$/, "");
-
-    for (const e of entries) {
-      if (!e || typeof e.name !== "string" || !e.name) continue;
-      const child = this.makeNode(
-        Object.assign({}, e, { path: parent + "/" + e.name }),
-        wrap._depth + 1
-      );
-      box.appendChild(child);
-    }
+    if (!res.ok) return;
     wrap._loaded = true;
-    wrap._mountInfo = data.mount;
+    wrap._mountInfo = res.mount;
 
     // ★ 这里**不再**递归恢复子节点展开状态 ★
     //   旧写法在此处 `for (child of box.children) await this.expandNode(child)`
@@ -1357,12 +1497,28 @@ export class FileTree {
     while (queue.length) {
       if (this.destroyed) return;
       const wrap = queue.shift();
-      if (!wrap || !wrap._entry || visited.has(wrap)) continue;
+      if (!wrap || visited.has(wrap)) continue;
       visited.add(wrap);
+
+      // ★★★ 需求4（2026-09-26）：根节点现在可能是**容器**而不是 wrap ★★★
+      //   loadRoot 不再造「盘根行」，所以它把 `this.treeEl` 传进来 ——
+      //   容器没有 `_entry` / `_children`，只有直接子节点（都是 wrap）。
+      //   ⇒ 容器的职责只是「把它下面第一层目录入队」，自己不展开。
+      //   过去这里写 `if (!wrap._entry) continue`，那会把整棵树直接放弃恢复。
+      if (!wrap._entry) {
+        for (const child of Array.from(wrap.children || [])) {
+          if (child && child._entry && child._entry.isDir === true) queue.push(child);
+        }
+        continue;
+      }
+
       if (!this.canExpand(wrap._entry)) continue;
 
       const key = this.nodeKeyOf(wrap._entry);
       // 盘根本身在 loadRoot 里已经展开过，不再重复处理
+      //   ⚠️ 需求4 之后**正常情况下不会再遇到 isMountRoot 的 wrap**
+      //      （它不再被创建）。这段保留是为了兼容 / 防御：
+      //      万一别处（如测试）仍造了盘根节点，行为与改造前一致。
       if (!wrap._entry.isMountRoot && !this.expanded.has(key)) continue;
 
       // 硬上限：防御性闸门。正常一棵树几十个目录，上限设 300 足够宽，
@@ -1401,6 +1557,8 @@ export class FileTree {
    *   2) 切到目标 mount（现在树一次只显示一个盘：loadRoot 按 currentMount 取）
    *   3) 把 mount:/各层目录 逐个塞进 this.expanded，再走一次 loadRoot
    *      —— loadRoot → restoreExpanded 会自动把这条路径上的目录全展开
+   *      ★ 需求4 之后树顶不再有「盘根行」，但 `mount::/` 这个 key 依然登记着
+   *        （loadRoot 把第一层铺到顶层时沿用同一个 key 语义），不需要改。
    *   4) 找到最深那层的节点，scrollIntoView + 高亮 + selectRow
    *
    * ★ 为什么用「塞 expanded + 重载」而不是逐层 await expandNode ★

@@ -1078,23 +1078,23 @@ svg.nb-type-icon {
 
 /* ★ 任务27：拖动手柄 + 落位指示线 ★
  *
- *  手柄只占很小一块，平时低对比度，hover 才显眼 ——
- *  嵌入块的头是"信息条"，不该被一个把手抢了视觉重心。
- *  cursor:grab 让鼠标形态明确提示"这里能按"。
+ * ★★★ 需求2（2026-09-26）：六点手柄 `⠿` 已删除 ★★★
+ *
+ *   用户原话：「去掉网盘文件嵌入块路径前面显示的那个6个点，
+ *             分两列三排显示的那个字。」
+ *   `⠿`（U+283F BRAILLE PATTERN DOTS-123456）在浏览器里按 2 列 × 3 排
+ *   渲染，视觉上就是「6 个点」。
+ *
+ *   ⇒ `.nb-embed-grip` 的样式**已全部删除**（DOM 里也没有该元素了）。
+ *     拖动排序改为把 **.nb-embed-head 本身**作拖动源
+ *     （见 embed.js 的 makeEmbedDraggable(null, …)）。
+ *   ⚠️ 别为了「保险」把 .nb-embed-grip 规则加回来 —— 没有元素会用到，
+ *     反而会让后来的人以为手柄还在。
  */
-.nb-embed-grip {
-  flex: 0 0 auto;
-  cursor: grab;
-  user-select: none;
-  color: var(--b3-theme-on-surface-light);
-  opacity: 0.55;
-  font-size: 13px;
-  line-height: 1;
-  padding: 0 2px;
-}
-.nb-embed-grip:hover { opacity: 1; }
-.nb-embed-grip:active { cursor: grabbing; }
-.nb-embed-grip.is-dragging { cursor: grabbing; opacity: 1; }
+/* 拖动源：整个头部（原手柄位置）。cursor:grab 提示"这里能按着拖" */
+.nb-embed-head.nb-embed-drag { cursor: grab; }
+.nb-embed-head.nb-embed-drag:active { cursor: grabbing; }
+.nb-embed-head.is-dragging { cursor: grabbing; }
 
 /* 被拖起来的块整体变淡，用户知道"拿着的是它" */
 .nb-embed.is-dragging { opacity: 0.5; }

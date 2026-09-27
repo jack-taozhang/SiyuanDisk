@@ -85,6 +85,7 @@ const STATIC = [
   "DEVELOPMENT.md",
   "REPORT-t67.md",
   "i18n/zh_CN.json",
+  "i18n/en_US.json",
 ];
 
 /* -------------------------------------------------------------------------
@@ -618,11 +619,155 @@ function assertEntryIsSource() {
   return text;
 }
 
+/**
+ * ★★★ 清单完整性前置断言（2026-09-26 加，因为真出过第二次）★★★
+ *
+ *   现象：仓库根的 `plugin.json` 被**另一个插件（画布 siyuan-diskcanvas）的
+ *   manifest 整体覆盖**了 —— name/displayName/url/version/description/readme
+ *   全变成画布插件的值（`name: "siyuan-diskcanvas"`、`README_zh_CN.md`）。
+ *
+ *   后果链（比 index.js 那次更隐蔽）：
+ *     · plugin.json 被原样拷进安装目录 ⇒ 目录叫 siyuan-nebuladisk，
+ *       而 name 是 siyuan-diskcanvas ⇒ **思源靠 name==目录名 配对，加载不起来**
+ *     · readme.zh_CN 指向 README_zh_CN.md（本项目里是 README.zh_CN.md）⇒ 缺文件
+ *     · 而且 build.js **不会报错**：它只拷静态文件，两份清单都是合法 JSON，
+ *       自检里那条 name==目录名 检查在 `--repo` 目标下还被刻意跳过了
+ *     ⇒ 典型症状是「构建成功、装上去没反应」，又一次"语法通过≠能跑"。
+ *
+ *   注意这是**同一类事故的第三次**（前两次：index.js 入口被产物覆盖、
+ *   index.css 被画布插件 CSS 覆盖）。三个文件的共同点是被"跨项目同步"
+ *   误伤 ⇒ 所以这条断言也顺带校验「清单里所有引用的文件真实存在」。
+ */
+function assertManifestIsThisPlugin() {
+  const p = path.join(SRC_ROOT, "plugin.json");
+  const raw = fs.readFileSync(p, "utf8");
+  let mj;
+  try {
+    mj = JSON.parse(raw);
+  } catch (e) {
+    throw new Error(`plugin.json 不是合法 JSON：${e.message}`);
+  }
+  const problems = [];
+
+  // ① name 必须是本项目
+  if (mj.name !== "siyuan-nebuladisk") {
+    problems.push(
+      `name = ${JSON.stringify(mj.name)}，期望 "siyuan-nebuladisk"`
+    );
+  }
+  // ② 反例哨兵：画布插件的特征值一个都不该出现
+  const canvasMarks = [
+    mj.name === "siyuan-diskcanvas",
+    /diskcanvas/i.test(String(mj.url || "")),
+    /盘绘|DiskCanvas/i.test(JSON.stringify(mj.displayName || {})),
+    /README_zh_CN\.md$/.test(String((mj.readme || {}).zh_CN || "")),
+  ];
+  if (canvasMarks.some(Boolean)) {
+    problems.push("检测到**画布插件(siyuan-diskcanvas)** 的清单特征（疑似被跨项目同步覆盖）");
+  }
+  // ③ 引用的文件必须存在（README/icon 缺失时思源会静默跳过插件）
+  for (const [k, v] of Object.entries(mj.readme || {})) {
+    if (!fs.existsSync(path.join(SRC_ROOT, v))) {
+      problems.push(`readme.${k} 指向的文件不存在：${v}`);
+    }
+  }
+  if (mj.icon && !fs.existsSync(path.join(SRC_ROOT, mj.icon))) {
+    problems.push(`icon 不存在：${mj.icon}`);
+  }
+
+  if (problems.length) {
+    throw new Error(
+      `★ 仓库根的 plugin.json 看起来**不是本插件的清单**！★\n` +
+      problems.map((x) => `    · ${x}`).join("\n") + "\n" +
+      `  它很可能被「跨插件/跨项目同步」覆盖了（本项目已发生 3 次同类事故：\n` +
+      `  index.js 入口被产物覆盖、index.css 被画布插件 CSS 覆盖、plugin.json 被画布清单覆盖）。\n` +
+      `  修复：从版本库取回 —— git checkout -- plugin.json`
+    );
+  }
+  return mj;
+}
+
+/**
+ * ★★★ 断言 i18n 词表属于本插件（第 4 类跨项目污染）★★★
+ *
+ * 背景（2026-09-27 实测）：`i18n/zh_CN.json` 被画布插件整份覆盖 ——
+ * 476 条 `canvasHelper` / `untitledCanvas` / `toolbarNew` 之类的画布词条，
+ * 而本插件真正引用的 `dockTitle` / `embedFileName` / `openInBrowser` /
+ * `refreshAll` / `settingsTitle` / `settingsVerify` **一个都没有**。
+ *
+ * 为什么危险且难发现：
+ *   - 插件每处调用都写了中文兜底（`this.i18n.dockTitle || "NebulaDisk"`），
+ *     所以**中文环境下完全看不出问题**；
+ *   - 只有在非中文界面才会退化成兜底值 ⇒ 长期潜伏。
+ *
+ * 判据（不依赖词表内容语义，只依赖「代码真的在用」）：
+ *   ① i18n 里至少要有 N 个「源码里真实引用」的 key —— 一个都没有必是污染；
+ *   ② 画布插件的标志性 key 不得出现。
+ */
+function assertI18nIsThisPlugin() {
+  const I18N_USED = [
+    "dockTitle",
+    "embedFileName",
+    "openInBrowser",
+    "refreshAll",
+    "settingsTitle",
+    "settingsVerify",
+  ];
+  // 画布插件（siyuan-diskcanvas）的标志词条，任一出现即判定为被覆盖
+  const CANVAS_KEYS = [
+    "canvasHelper",
+    "untitledCanvas",
+    "toolbarNew",
+    "dockEmptySelectionTip",
+    "openCanvasPath",
+  ];
+
+  const dir = path.join(SRC_ROOT, "i18n");
+  if (!fs.existsSync(dir)) return;
+
+  const problems = [];
+  for (const f of fs.readdirSync(dir)) {
+    if (!f.endsWith(".json")) continue;
+    const fp = path.join(dir, f);
+    let obj;
+    try {
+      obj = JSON.parse(fs.readFileSync(fp, "utf8"));
+    } catch (e) {
+      problems.push(`i18n/${f} 不是合法 JSON：${e.message}`);
+      continue;
+    }
+    const keys = Object.keys(obj || {});
+    const hit = I18N_USED.filter((k) => keys.includes(k));
+    const canvasHit = CANVAS_KEYS.filter((k) => keys.includes(k));
+    if (canvasHit.length) {
+      problems.push(
+        `i18n/${f} 出现**画布插件**词条 ${canvasHit.join(", ")}（疑似被跨项目同步覆盖）`
+      );
+    }
+    if (hit.length === 0) {
+      problems.push(
+        `i18n/${f} 里**没有任何**本插件源码引用的 key（${I18N_USED.join(", ")}）` +
+        ` ⇒ 整份词表都不是本插件的（共 ${keys.length} 条）`
+      );
+    }
+  }
+
+  if (problems.length) {
+    throw new Error(
+      `★ i18n 词表看起来**不属于本插件**！★\n` +
+      problems.map((x) => `    · ${x}`).join("\n") + "\n" +
+      `  修复：从版本库取回 —— git checkout -- i18n/`
+    );
+  }
+}
+
 function main() {
   let outDir = process.argv[2] || DEFAULT_OUT;
   if (outDir === "--repo") outDir = REPO_DIST;
 
   assertEntryIsSource();
+  assertManifestIsThisPlugin();
+  assertI18nIsThisPlugin();
 
   fs.mkdirSync(outDir, { recursive: true });
   fs.mkdirSync(path.join(outDir, "i18n"), { recursive: true });
