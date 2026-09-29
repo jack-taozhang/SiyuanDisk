@@ -9,8 +9,8 @@ const crypto = require("crypto");
 const { spawnSync } = require("child_process");
 const { PASS, SUDO } = require("./_secrets.cjs");
 
-const B = "http://172.16.30.128:8089";
-const OO = "http://172.16.30.128:8082";
+const B = "http://192.168.193.70:8089";
+const OO = "http://192.168.193.70:8082";
 const SECRET = process.env.NB_OO_SECRET || "";
 if (!SECRET) { console.error("缺少 NB_OO_SECRET（= compose 里 NEBULA_OO_SECRET）"); process.exit(2); }
 

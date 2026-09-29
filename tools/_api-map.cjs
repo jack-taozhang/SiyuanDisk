@@ -3,7 +3,7 @@
  * 用法: node _api-map.cjs
  */
 const fs = require("fs");
-const B = "http://172.16.30.128:8089";
+const B = "http://192.168.193.70:8089";
 
 (async () => {
   const out = [];

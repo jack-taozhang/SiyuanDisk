@@ -5,7 +5,7 @@
 const crypto = require("crypto");
 const { PASS, SUDO } = require("./_secrets.cjs");
 const { spawnSync } = require("child_process");
-const B = "http://172.16.30.128:8089";
+const B = "http://192.168.193.70:8089";
 const SECRET = process.env.NB_OO_SECRET || "";
 if (!SECRET) { console.error("缺少 NB_OO_SECRET（= compose 里 NEBULA_OO_SECRET）"); process.exit(2); }
 const MIN_MB = Number(process.argv[2] || 100);
@@ -53,6 +53,6 @@ const sig = crypto.createHmac("sha256", SECRET)
 const jwt = b64u(JSON.stringify(header)) + "." + b64u(JSON.stringify(payload)) + "." + sig;
 require("fs").writeFileSync("_nas-src/_big-body.json", JSON.stringify(Object.assign({}, payload, { token: jwt })));
 console.log("conversion 请求中（大文件可能要几十秒）...");
-const res = curl(["-X", "POST", "http://172.16.30.128:8082/converter",
+const res = curl(["-X", "POST", "http://192.168.193.70:8082/converter",
   "-H", "Content-Type: application/json", "--data-binary", "@_nas-src/_big-body.json", "-m", "180"]);
 console.log("conversion 响应:", res.slice(0, 400));

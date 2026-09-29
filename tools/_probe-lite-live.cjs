@@ -5,7 +5,7 @@
  */
 const http = require("http");
 
-const BASE = "http://172.16.30.128:8089";
+const BASE = "http://192.168.193.70:8089";
 
 function get(path) {
   return new Promise((res, rej) => {

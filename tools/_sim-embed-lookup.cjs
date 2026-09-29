@@ -54,9 +54,9 @@ const sandbox = {
     addEventListener() {},
   },
   location: {
-    href: "http://172.16.30.128:6806/stage/build/desktop/",
-    origin: "http://172.16.30.128:6806",
-    hostname: "172.16.30.128", protocol: "http:", port: "6806",
+    href: "http://192.168.193.70:6806/stage/build/desktop/",
+    origin: "http://192.168.193.70:6806",
+    hostname: "192.168.193.70", protocol: "http:", port: "6806",
   },
   navigator: { userAgent: "Mozilla/5.0 Chrome/120" },
   fetch: async () => { throw new Error("fetch stub"); },

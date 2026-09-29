@@ -61,7 +61,7 @@ export function hasNode() {
 const CHANNEL_KEY = "nebuladisk.channel";
 
 /**
- * 后端服务器地址 —— 形如 `http://172.16.30.128:8089`。
+ * 后端服务器地址 —— 形如 `http://192.168.193.70:8089`。
  *
  * 来源优先级：插件设置 serverUrl → 空。
  * 空表示「没有直连目标」，此时只能用代理通道。
@@ -131,12 +131,12 @@ export function webDiskUrl(base, mount, filePath) {
  * ★★★ 任务③/⑤ 的关键修正（2026-09-22，实测得出）★★★
  *
  *   旧做法：插件自己用 `URL.createObjectURL(blob)` 造一个宿主页，
- *          宿主页里再 `<iframe src="http://172.16.30.128:8089/preview/…">`。
+ *          宿主页里再 `<iframe src="http://192.168.193.70:8089/preview/…">`。
  *
  *   **这个做法不成立。** 用 CDP 在真机上量到：
  *
- *       hostSrcHead      = blob:http://172.16.30.128:6806/7d77a594-…
- *       innerOrigin      = http://172.16.30.128:8089
+ *       hostSrcHead      = blob:http://192.168.193.70:6806/7d77a594-…
+ *       innerOrigin      = http://192.168.193.70:8089
  *       innerDocReadable = false          ← ★ contentDocument === null ★
  *
  *   blob: 继承的是**创建者**（思源，:6806）的 origin，而预览页在
@@ -363,7 +363,7 @@ async function pickChannel() {
  * 把后端返回的相对路径补成可访问的绝对 URL。
  *
  * ★ 两通道的基址不同 ★
- *   直连：基址 = serverUrl（http://172.16.30.128:8089）
+ *   直连：基址 = serverUrl（http://192.168.193.70:8089）
  *   代理：基址 = proxyBase()（http://127.0.0.1:6810）
  *   同一个 `/preview/onlinePreview?...` 在两条通道下要拼出不同的绝对地址。
  *   预览 iframe 的 src、下载链接都用这里的结果。
@@ -935,7 +935,7 @@ export const API = {
    *     根因都是这一行。）
    *
    *   正确做法与 iframe / 直链一致：
-   *     · 直连通道 ⇒ serverBase()，即 http://172.16.30.128:8089 ✓
+   *     · 直连通道 ⇒ serverBase()，即 http://192.168.193.70:8089 ✓
    *     · 代理通道 ⇒ proxyBase()，即 http://127.0.0.1:6810（本机桌面端可达）✓
    *
    *   ★ 直连通道为什么不用 /api/download ★
@@ -1004,7 +1004,7 @@ export const API = {
    *   所以这里必须显式改写主机，不能指望 fixUrl 兜住。
    *
    *   改写成什么：当前通道的**浏览器可达**基点。
-   *     · 直连通道 ⇒ serverBase()，即 http://172.16.30.128:8089 ✓
+   *     · 直连通道 ⇒ serverBase()，即 http://192.168.193.70:8089 ✓
    *     · 代理通道 ⇒ proxyBase()，即 http://127.0.0.1:6810（本机桌面端可达）✓
    *   签名在查询串里，换主机不影响校验，所以这样改是安全的。
    *

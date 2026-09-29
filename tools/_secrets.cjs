@@ -36,7 +36,7 @@ function loadLocal() {
 const local = loadLocal();
 const PASS = process.env.NB_PASS || local.pass || "";
 const USER = process.env.NB_USER || local.user || "tao_zhang";
-const HOST = process.env.NB_HOST || local.host || "172.16.30.128";
+const HOST = process.env.NB_HOST || local.host || "192.168.193.70";
 
 if (!PASS) {
   throw new Error(

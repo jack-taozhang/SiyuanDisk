@@ -8,7 +8,7 @@ const path = require("path");
 const { spawnSync } = require("child_process");
 const { PASS, SUDO } = require("./_secrets.cjs");
 
-const B = "http://172.16.30.128:8089";
+const B = "http://192.168.193.70:8089";
 // ★ JWT secret 不入库（仓库是公开的）：从环境变量取，缺了直接退出 ★
 const SECRET = process.env.NB_OO_SECRET || "";
 if (!SECRET) { console.error("缺少 NB_OO_SECRET（= compose 里 NEBULA_OO_SECRET）。export NB_OO_SECRET='…' 后重跑"); process.exit(2); }
@@ -67,7 +67,7 @@ fs.writeFileSync(bodyFile, JSON.stringify(Object.assign({}, payload, { token: jw
 
 console.log("\n[③ /converter 请求中…]");
 const t0 = Date.now();
-const res = curl(["-X", "POST", "http://172.16.30.128:8082/converter",
+const res = curl(["-X", "POST", "http://192.168.193.70:8082/converter",
   "-H", "Content-Type: application/json", "--data-binary", "@" + bodyFile, "-m", "300"]);
 console.log(`耗时 ${((Date.now() - t0) / 1000).toFixed(1)}s，响应:`, res.slice(0, 400) || "(空)");
 

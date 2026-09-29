@@ -42,7 +42,7 @@
 
 // ★ 跨模块依赖：网盘可达基点 ★
 //   「打开网盘」按钮要拼出 NebulaDisk **网页版**的地址。
-//   serverBase() 返回形如 http://172.16.30.128:8089 的**网盘地址**
+//   serverBase() 返回形如 http://192.168.193.70:8089 的**网盘地址**
 //   （来自插件设置 serverUrl）。
 //   ⚠️ 不要用 proxyBase() —— 那是 127.0.0.1:6810 的插件本地代理，
 //      不是网盘界面，网页端/手机端也连不上（任务②修的就是这个）。
@@ -763,7 +763,7 @@ function renderFileEmbed(spec, plugin) {
   //   三处都错：
   //     ① 主机错：proxyBase() 是**本地代理**（127.0.0.1:6810）。
   //        但「打开网盘」是要在浏览器里开**网盘网页版**，
-  //        那在 serverUrl（http://172.16.30.128:8089）。
+  //        那在 serverUrl（http://192.168.193.70:8089）。
   //        桌面端 127.0.0.1 上恰好也有个代理在听，所以能开出一个页面，
   //        但那不是网盘界面（是代理），网页端/手机端则直接连接被拒。
   //     ② 端口错：6810 是插件代理端口，不是网盘端口（8089）。
@@ -798,7 +798,7 @@ function renderFileEmbed(spec, plugin) {
   webBtn.textContent = "打开网盘";
   webBtn.title = "在浏览器中打开 NebulaDisk 网页版，并定位到该文件所在的目录";
   webBtn.onclick = () => {
-    // ★ 用 serverBase()：那是**浏览器可达的网盘地址**（http://172.16.30.128:8089）
+    // ★ 用 serverBase()：那是**浏览器可达的网盘地址**（http://192.168.193.70:8089）
     //   绝不能用 proxyBase() —— 那是 127.0.0.1:6810 的插件本地代理。
     let base = "";
     try { base = serverBase(); } catch { /* 忽略 */ }
@@ -1070,13 +1070,13 @@ function renderFileEmbed(spec, plugin) {
    * ★★★ 为什么这里**没有** blob 宿主页了（2026-09-22 重要修正）★★★
    *
    * 这段代码原来在这里：用 URL.createObjectURL(new Blob([html])) 造一个
-   * 宿主页，宿主页里 <iframe src=http://172.16.30.128:8089/preview/…>，
+   * 宿主页，宿主页里 <iframe src=http://192.168.193.70:8089/preview/…>，
    * 再由宿主页的脚本往子 iframe 里注入隐藏 CSS + 中键守卫。
    * 它看起来完全合理，**但真机实测证明根本不生效**：
    *
    *   用 CDP 在真思源页面上量到（见 tools 里的 probe-origin）：
-   *     hostSrcHead      = blob:http://172.16.30.128:6806/7d77a594-…
-   *     innerOrigin      = http://172.16.30.128:8089
+   *     hostSrcHead      = blob:http://192.168.193.70:6806/7d77a594-…
+   *     innerOrigin      = http://192.168.193.70:8089
    *     innerDocReadable = false        ← ★ contentDocument === null ★
    *
    * 根因：blob: URL 继承的是**创建者**（思源，:6806）的 origin，
@@ -1114,7 +1114,7 @@ function renderFileEmbed(spec, plugin) {
    *
    * ★ 改为 blob: URL ★
    *   blob URL 继承**创建它的页面的 origin**（在这里就是思源页面的 origin：
-   *   http://172.16.30.128:6806）。有真实 origin 之后：
+   *   http://192.168.193.70:6806）。有真实 origin 之后：
    *     · 可以正常跨域加载 OO 的 api.js（它是 script 标签，不需要 CORS 头）
    *     · DocsAPI 发起的请求带上正常 Origin，OO 服务端能正常响应
    *   blob 用完要 revoke，这里在 iframe 卸载时由调用方负责。

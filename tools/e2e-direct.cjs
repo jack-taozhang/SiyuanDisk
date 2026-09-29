@@ -17,8 +17,8 @@
  */
 const http = require("http");
 
-const BASE = { host: "172.16.30.128", port: 8089 };
-const SERVER_URL = "http://172.16.30.128:8089";
+const BASE = { host: "192.168.193.70", port: 8089 };
+const SERVER_URL = "http://192.168.193.70:8089";
 // 思源页面的 origin：桌面端是 http://127.0.0.1:6806
 const ORIGIN = "http://127.0.0.1:6806";
 const USER = "tao_zhang";

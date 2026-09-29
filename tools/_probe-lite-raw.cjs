@@ -5,7 +5,7 @@
 const http = require("http");
 const fs = require("fs");
 
-http.get("http://172.16.30.128:8089/lite?kind=cad&target=%2Fcad%2F", { timeout: 15000 }, (r) => {
+http.get("http://192.168.193.70:8089/lite?kind=cad&target=%2Fcad%2F", { timeout: 15000 }, (r) => {
   let b = "";
   r.setEncoding("utf8");
   r.on("data", (c) => (b += c));

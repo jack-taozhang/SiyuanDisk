@@ -22,7 +22,17 @@ const { spawnSync } = require("child_process");
 const LOCAL_DIR = "D:/Software/SiYuan/data/plugins/siyuan-nebuladisk";
 const REMOTE_DIR =
   "/vol1/docker/project/dk_app/siyuan/siyuan_E4Xr/data/data/plugins/siyuan-nebuladisk";
-const SSH = "D:/Docker/SiyuanDisk/data/plugins/siyuan-nebuladisk/tools/ssh-nb.cjs";
+
+// ★ 2026-09-28 实测：本脚本在当前环境**已不可用**，请改用 push-to-nas.py ★
+//   两个独立故障叠加：
+//     1) spawnSync(ssh.exe) 一律 EBUSY（沙箱 LiteSandbox 拦子进程，连 cmd.exe 都起不来）
+//     2) 直接跑 ssh.exe 会 `ssh_askpass: pipe: Unknown error` → 密码读不进来
+//        （.sh/.bat/.cmd 三种助手报错相同，关沙箱也一样）
+//   → 用 tools/nbssh.py（paramiko，纯 Python，不经 Windows 管道）+ tools/push-to-nas.py
+//
+//   下面这行 SSH 常量原指向 D:/Docker/SiyuanDisk/...（**该目录不存在**），已修正为
+//   D:/Docker/Siyuan/...，但即便路径对了，上面两个故障仍会让它失败。
+const SSH = "D:/Docker/Siyuan/data/plugins/siyuan-nebuladisk/tools/ssh-nb.cjs";
 
 // 必须是打包产物里真实存在的文件（不含 src/、tools/）
 const FILES = [

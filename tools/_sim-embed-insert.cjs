@@ -17,6 +17,23 @@
 const fs = require("fs");
 const path = require("path");
 
+/*
+ * ★ 2026-09-28：把硬编码的绝对路径改成基于 __dirname 的解析。
+ *   原写法是 D:/Docker/SiyuanDisk/data/plugins/siyuan-nebuladisk/…，
+ *   而本机真实路径是 D:/Docker/Siyuan/data/plugins/siyuan-nebuladisk/ ——
+ *   那个 SiYuanDisk 目录**根本不存在**，于是本文件后面的 readFileSync
+ *   直接抛 ENOENT 崩掉，整个套件从未真正跑通过
+ *   （实测：改成相对路径后才有正常输出）。
+ *   用 __dirname 后，仓库换位置/换机器都不用再改。
+ *
+ * ⚠️ 顺序有讲究：`path` 的 require 必须在 PLUGIN 之前。
+ *    第一版把它插在了 `const fs = require("fs")` 正下方 ——
+ *    `node --check` 语法检查能过（const 提升），但运行时立刻
+ *    ReferenceError: Cannot access 'path' before initialization。
+ *    语法通过 ≠ 能运行，这类错必须真跑一次才会现形。
+ */
+const PLUGIN = path.resolve(__dirname, "..");
+
 const BUNDLE = "D:/Software/SiYuan/data/plugins/siyuan-nebuladisk/index.js";
 const src = fs.readFileSync(BUNDLE, "utf8");
 
@@ -120,9 +137,9 @@ ok(iiBody.includes("throw err") || /throw new Error\(\(e && e\.message\)/.test(i
    "内核失败时把原因 throw 出去，让调用方显示具体原因");
 ok(/找不到要插入的文档/.test(src),
    "定位失败时给出可自助的中文提示（而不是「请查看控制台日志」）");
-for (const [label, p] of [["index.js", "D:/Docker/SiyuanDisk/data/plugins/siyuan-nebuladisk/index.js"],
-                          ["src/viewer.js", "D:/Docker/SiyuanDisk/data/plugins/siyuan-nebuladisk/src/viewer.js"],
-                          ["src/tree.js", "D:/Docker/SiyuanDisk/data/plugins/siyuan-nebuladisk/src/tree.js"]]) {
+for (const [label, p] of [["index.js", path.join(PLUGIN, "index.js")],
+                          ["src/viewer.js", path.join(PLUGIN, "src/viewer.js")],
+                          ["src/tree.js", path.join(PLUGIN, "src/tree.js")]]) {
   const t = fs.readFileSync(p, "utf8");
   ok(!/请查看控制台日志/.test(t), `${label} 不再出现无用的「请查看控制台日志」`);
   ok(/e && e\.message/.test(t), `${label} catch 里显示 e.message`);
@@ -136,13 +153,13 @@ console.log("（2026-09-22 真根因：前置拦截把多级回退整个跳过�
   // 保留它的判空是合理的，不能一起扫。
   const cases = [
     ["index.js  pickAndEmbed",
-     "D:/Docker/SiyuanDisk/data/plugins/siyuan-nebuladisk/index.js",
+     path.join(PLUGIN, "index.js"),
      /async pickAndEmbed\([\s\S]*?\n  \}/],
     ["tree.js   embedToDoc",
-     "D:/Docker/SiyuanDisk/data/plugins/siyuan-nebuladisk/src/tree.js",
+     path.join(PLUGIN, "src/tree.js"),
      /embedToDoc\(entry, kind\) \{[\s\S]*?\n  \}/],
     ["viewer.js embedToDoc",
-     "D:/Docker/SiyuanDisk/data/plugins/siyuan-nebuladisk/src/viewer.js",
+     path.join(PLUGIN, "src/viewer.js"),
      /embedToDoc\(\) \{[\s\S]*?\n  \}/],
   ];
   for (const [label, p, re] of cases) {
@@ -188,9 +205,9 @@ console.log("\n【D】★★★ 三处插入点必须全部收敛到唯一通道
 // 背景：历史上插入点散落三处，修了两处漏一处（用户点的正是漏的那处）。
 // 这里逐个静态确认：① 都调 insertEmbedIntoDoc ② 都没有反引号围栏 ③ 没有裸前端 insert
 const srcFiles = {
-  "index.js": "D:/Docker/SiyuanDisk/data/plugins/siyuan-nebuladisk/index.js",
-  "src/tree.js": "D:/Docker/SiyuanDisk/data/plugins/siyuan-nebuladisk/src/tree.js",
-  "src/viewer.js": "D:/Docker/SiyuanDisk/data/plugins/siyuan-nebuladisk/src/viewer.js",
+  "index.js": path.join(PLUGIN, "index.js"),
+  "src/tree.js": path.join(PLUGIN, "src/tree.js"),
+  "src/viewer.js": path.join(PLUGIN, "src/viewer.js"),
 };
 const bodies = {};
 for (const [label, p] of Object.entries(srcFiles)) {
@@ -223,7 +240,7 @@ ok(!/protyle\.insert\("```/.test(bodies["src/viewer.js"]),
    "viewer.js 不再用 protyle.insert + 反引号");
 
 // ④ 唯一通道的实现存在且用内核 API
-const emb = fs.readFileSync("D:/Docker/SiyuanDisk/data/plugins/siyuan-nebuladisk/src/embed.js", "utf8");
+const emb = fs.readFileSync(path.join(PLUGIN, "src/embed.js"), "utf8");
 ok(emb.includes("export async function insertEmbedIntoDoc"), "embed.js 导出 insertEmbedIntoDoc");
 ok(emb.includes("export async function repairFenceBlock"), "embed.js 导出 repairFenceBlock");
 ok(/\/api\/block\/insertBlock/.test(emb), "insertEmbedIntoDoc 走内核 insertBlock");
@@ -242,14 +259,26 @@ ok(emb.includes("BOXED_TYPES"), "容器块类型表存在（列表/引用等要�
  *   3. 监听必须挂在 document 上（正文与文件树是相邻的两个 DOM 子树）
  * ========================================================================== */
 console.log("\n【H】文件树拖拽插入（需求 ④）");
-const tree = fs.readFileSync("D:/Docker/SiyuanDisk/data/plugins/siyuan-nebuladisk/src/tree.js", "utf8");
+const tree = fs.readFileSync(path.join(PLUGIN, "src/tree.js"), "utf8");
+// ★ 剥注释版本：下面 H1e' 是**反向**断言（"makeGridCell 已不存在"），
+//   不剥注释会命中说明注释里的 "makeGridCell" 而假红（实测踩到过一次）。
+const treeNC = tree
+  .replace(/\/\*[\s\S]*?\*\//g, "")
+  .replace(/<!--[\s\S]*?-->/g, "")
+  .replace(/^[ \t]*\/\/.*$/gm, "");
 
 // ★ H1：任务30 把这段接线从 makeNode 搬进了 attachEmbedDrag()（唯一实现）。
 //   所以不能再断言 `row.draggable = true` —— 那个字面量已经不在源码里了。
-//   改断「能力仍在，且是三处共用的唯一实现」：
+//   改断「能力仍在，且是多处共用的唯一实现」：
 //     · attachEmbedDrag() 里设置 el.draggable = true
-//     · 且 makeNode / makeResultRow / makeGridCell 三处都调用它
+//     · 且 makeNode / makeResultRow 两处都调用它
 //   （更完整的行为断言见 test/verify-drag-insert.cjs —— 那套会真跑 DOM）
+//
+//   ★ 2026-09-28：`makeGridCell` 这一处调用点**已随网格视图一起删除** ★
+//     用户要求「去掉文件夹 网格视图方式，同时去掉这个按钮」，
+//     makeGridCell() 整个函数不存在了，原来的 H1e 断言
+//     （`this.attachEmbedDrag(cell, ...)`）随之删除。
+//     ⚠️ 注意：拖拽能力**没有减少** —— 树节点 + 搜索结果两条链路完好。
 ok(/attachEmbedDrag\s*\(\s*el\s*,\s*entry\s*\)/.test(tree),
    "H1：存在 attachEmbedDrag() 唯一实现（任务30：不再是 makeNode 内联一份）");
 ok(/el\.draggable\s*=\s*true/.test(tree),
@@ -258,8 +287,8 @@ ok(/this\.attachEmbedDrag\s*\(\s*row\s*,\s*entry\s*\)/.test(tree),
    "H1c：makeNode（文件树）调用了 attachEmbedDrag");
 ok(/this\.attachEmbedDrag\s*\(\s*row\s*,\s*\{/.test(tree),
    "H1d：makeResultRow（搜索结果）调用了 attachEmbedDrag（任务30 的原始诉求）");
-ok(/this\.attachEmbedDrag\s*\(\s*cell\s*,/.test(tree),
-   "H1e：makeGridCell（网格格子）调用了 attachEmbedDrag");
+ok(/makeGridCell\s*\(/.test(treeNC) === false,
+   "H1e'：★ makeGridCell 已随网格视图移除（用户 2026-09-28 要求）");
 // ★ #55：文件夹必须被明确排除（否则用户会把文件夹拖成嵌入块）
 ok(/if\s*\(\s*entry\s*&&\s*entry\.isDir\s*\)\s*\{[\s\S]*?return el;/.test(tree),
    "H1f：★ #55 文件夹在 attachEmbedDrag 里被拦下（不再可拖）");
@@ -313,7 +342,7 @@ ok(/unbindDragDrop/.test(tree) && /removeEventListener/.test(tree),
 }
 
 // H17：CSS 要有落点高亮，否则用户盲放
-const css = fs.readFileSync("D:/Docker/SiyuanDisk/data/plugins/siyuan-nebuladisk/index.css", "utf8");
+const css = fs.readFileSync(path.join(PLUGIN, "index.css"), "utf8");
 ok(/\.nb-drop-target/.test(css), "H17：CSS 里有 .nb-drop-target 落点高亮");
 ok(/\.nb-node\.is-dragging/.test(css), "H18：CSS 里有拖拽中的节点样式");
 

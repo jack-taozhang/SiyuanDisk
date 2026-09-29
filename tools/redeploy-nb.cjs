@@ -12,7 +12,10 @@
  */
 const { spawnSync } = require("child_process");
 
-const SSH = "D:/Docker/SiyuanDisk/data/plugins/siyuan-nebuladisk/tools/ssh-nb.cjs";
+// ★ 2026-09-28：路径由 D:/Docker/SiyuanDisk/... 修正为 D:/Docker/Siyuan/...（前者不存在）
+//   但注意：本脚本依赖 ssh-nb.cjs → spawnSync，在当前环境会 EBUSY 起不来。
+//   若要实际执行，请参照 tools/nbssh.py 的 paramiko 方案重写。
+const SSH = "D:/Docker/Siyuan/data/plugins/siyuan-nebuladisk/tools/ssh-nb.cjs";
 const { SUDO } = require("./_secrets.cjs");
 const COMPOSE_SRC = "/vol1/1000/Docker/NebulaDisk/deploy/docker-compose.yml";
 const COMPOSE_MOUNTS = "/vol1/1000/NebulaDisk/docker-compose.mounts.yml";
@@ -77,6 +80,6 @@ process.stdout.write(cmp.out);
 
 console.log("\n=== 5. CORS 头是否已下发 ===");
 const cors = ssh(
-  `curl -s -D - -o /dev/null -H 'Origin: http://172.16.30.128:6806' http://127.0.0.1:8089/healthz 2>/dev/null | tr -d '\\r' | grep -i 'access-control\\|HTTP/'`
+  `curl -s -D - -o /dev/null -H 'Origin: http://192.168.193.70:6806' http://127.0.0.1:8089/healthz 2>/dev/null | tr -d '\\r' | grep -i 'access-control\\|HTTP/'`
 );
 process.stdout.write(cors.out || "  （未看到 access-control-* 响应头）\n");

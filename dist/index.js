@@ -886,7 +886,7 @@ const __mod_api = (() => {
   const CHANNEL_KEY = "nebuladisk.channel";
 
   /**
-   * 后端服务器地址 —— 形如 `http://172.16.30.128:8089`。
+   * 后端服务器地址 —— 形如 `http://192.168.193.70:8089`。
    *
    * 来源优先级：插件设置 serverUrl → 空。
    * 空表示「没有直连目标」，此时只能用代理通道。
@@ -956,12 +956,12 @@ const __mod_api = (() => {
    * ★★★ 任务③/⑤ 的关键修正（2026-09-22，实测得出）★★★
    *
    *   旧做法：插件自己用 `URL.createObjectURL(blob)` 造一个宿主页，
-   *          宿主页里再 `<iframe src="http://172.16.30.128:8089/preview/…">`。
+   *          宿主页里再 `<iframe src="http://192.168.193.70:8089/preview/…">`。
    *
    *   **这个做法不成立。** 用 CDP 在真机上量到：
    *
-   *       hostSrcHead      = blob:http://172.16.30.128:6806/7d77a594-…
-   *       innerOrigin      = http://172.16.30.128:8089
+   *       hostSrcHead      = blob:http://192.168.193.70:6806/7d77a594-…
+   *       innerOrigin      = http://192.168.193.70:8089
    *       innerDocReadable = false          ← ★ contentDocument === null ★
    *
    *   blob: 继承的是**创建者**（思源，:6806）的 origin，而预览页在
@@ -1188,7 +1188,7 @@ const __mod_api = (() => {
    * 把后端返回的相对路径补成可访问的绝对 URL。
    *
    * ★ 两通道的基址不同 ★
-   *   直连：基址 = serverUrl（http://172.16.30.128:8089）
+   *   直连：基址 = serverUrl（http://192.168.193.70:8089）
    *   代理：基址 = proxyBase()（http://127.0.0.1:6810）
    *   同一个 `/preview/onlinePreview?...` 在两条通道下要拼出不同的绝对地址。
    *   预览 iframe 的 src、下载链接都用这里的结果。
@@ -1760,7 +1760,7 @@ const __mod_api = (() => {
      *     根因都是这一行。）
      *
      *   正确做法与 iframe / 直链一致：
-     *     · 直连通道 ⇒ serverBase()，即 http://172.16.30.128:8089 ✓
+     *     · 直连通道 ⇒ serverBase()，即 http://192.168.193.70:8089 ✓
      *     · 代理通道 ⇒ proxyBase()，即 http://127.0.0.1:6810（本机桌面端可达）✓
      *
      *   ★ 直连通道为什么不用 /api/download ★
@@ -1829,7 +1829,7 @@ const __mod_api = (() => {
      *   所以这里必须显式改写主机，不能指望 fixUrl 兜住。
      *
      *   改写成什么：当前通道的**浏览器可达**基点。
-     *     · 直连通道 ⇒ serverBase()，即 http://172.16.30.128:8089 ✓
+     *     · 直连通道 ⇒ serverBase()，即 http://192.168.193.70:8089 ✓
      *     · 代理通道 ⇒ proxyBase()，即 http://127.0.0.1:6810（本机桌面端可达）✓
      *   签名在查询串里，换主机不影响校验，所以这样改是安全的。
      *
@@ -2591,24 +2591,11 @@ const __mod_icons = (() => {
     <path fill="currentColor" d="M13.1 16.3a1.2 1.2 0 0 1 1.7 0l.4.4V11a1.2 1.2 0 0 1 2.4 0v5.7l.4-.4a1.2 1.2 0 0 1 1.7 1.7l-2.6 2.6a1.2 1.2 0 0 1-1.7 0L13.1 18a1.2 1.2 0 0 1 0-1.7Z"/>
     <path fill="currentColor" d="M11 23.2a1.2 1.2 0 0 1 1.2-1.2h7.6a1.2 1.2 0 0 1 0 2.4h-7.6A1.2 1.2 0 0 1 11 23.2Z"/>
   </symbol>
-  <!-- ★ 任务㉑：网格/列表视图切换图标 ★
-       自绘而不是用思源内置的 iconGrid —— 内置图标名在不同思源版本里
-       不一定存在（addIcons 里没有的 id，<use> 会渲染成空白，
-       按钮就变成"点不动的空气"）。自己的 symbol 永远是稳的。 -->
-  <symbol id="iconNbGrid" viewBox="0 0 32 32">
-    <rect x="5" y="4" width="9.4" height="9.4" rx="1.6" fill="currentColor"/>
-    <rect x="17.6" y="4" width="9.4" height="9.4" rx="1.6" fill="currentColor"/>
-    <rect x="5" y="16.6" width="9.4" height="9.4" rx="1.6" fill="currentColor"/>
-    <rect x="17.6" y="16.6" width="9.4" height="9.4" rx="1.6" fill="currentColor"/>
-  </symbol>
-  <symbol id="iconNbList" viewBox="0 0 32 32">
-    <rect x="5" y="5" width="4.4" height="4.4" rx="1.1" fill="currentColor"/>
-    <rect x="12.2" y="6" width="14.8" height="2.6" rx="1.3" fill="currentColor"/>
-    <rect x="5" y="13.8" width="4.4" height="4.4" rx="1.1" fill="currentColor"/>
-    <rect x="12.2" y="14.8" width="14.8" height="2.6" rx="1.3" fill="currentColor"/>
-    <rect x="5" y="22.6" width="4.4" height="4.4" rx="1.1" fill="currentColor"/>
-    <rect x="12.2" y="23.6" width="14.8" height="2.6" rx="1.3" fill="currentColor"/>
-  </symbol>
+  <!-- ★ 2026-09-28：iconNbGrid / iconNbList 两个网格/列表切换图标已删除 ★
+       网格视图整体移除（用户要求），这两个 symbol 已无任何 <use> 引用。
+       ⚠️ 删自定义 symbol 是安全的：思源对未注册的 id 只会渲染成空白，
+          不存在"注册了却不用"的副作用。反过来如果留着它们，
+          每次 addIcons 都要多解析两个 SVG，属于无谓开销。 -->
   `;
 
   /* ==========================================================================
@@ -2888,7 +2875,7 @@ const __mod_embed = (() => {
 
   // ★ 跨模块依赖：网盘可达基点 ★
   //   「打开网盘」按钮要拼出 NebulaDisk **网页版**的地址。
-  //   serverBase() 返回形如 http://172.16.30.128:8089 的**网盘地址**
+  //   serverBase() 返回形如 http://192.168.193.70:8089 的**网盘地址**
   //   （来自插件设置 serverUrl）。
   //   ⚠️ 不要用 proxyBase() —— 那是 127.0.0.1:6810 的插件本地代理，
   //      不是网盘界面，网页端/手机端也连不上（任务②修的就是这个）。
@@ -3609,7 +3596,7 @@ const __mod_embed = (() => {
     //   三处都错：
     //     ① 主机错：proxyBase() 是**本地代理**（127.0.0.1:6810）。
     //        但「打开网盘」是要在浏览器里开**网盘网页版**，
-    //        那在 serverUrl（http://172.16.30.128:8089）。
+    //        那在 serverUrl（http://192.168.193.70:8089）。
     //        桌面端 127.0.0.1 上恰好也有个代理在听，所以能开出一个页面，
     //        但那不是网盘界面（是代理），网页端/手机端则直接连接被拒。
     //     ② 端口错：6810 是插件代理端口，不是网盘端口（8089）。
@@ -3644,7 +3631,7 @@ const __mod_embed = (() => {
     webBtn.textContent = "打开网盘";
     webBtn.title = "在浏览器中打开 NebulaDisk 网页版，并定位到该文件所在的目录";
     webBtn.onclick = () => {
-      // ★ 用 serverBase()：那是**浏览器可达的网盘地址**（http://172.16.30.128:8089）
+      // ★ 用 serverBase()：那是**浏览器可达的网盘地址**（http://192.168.193.70:8089）
       //   绝不能用 proxyBase() —— 那是 127.0.0.1:6810 的插件本地代理。
       let base = "";
       try { base = serverBase(); } catch { /* 忽略 */ }
@@ -3916,13 +3903,13 @@ const __mod_embed = (() => {
      * ★★★ 为什么这里**没有** blob 宿主页了（2026-09-22 重要修正）★★★
      *
      * 这段代码原来在这里：用 URL.createObjectURL(new Blob([html])) 造一个
-     * 宿主页，宿主页里 <iframe src=http://172.16.30.128:8089/preview/…>，
+     * 宿主页，宿主页里 <iframe src=http://192.168.193.70:8089/preview/…>，
      * 再由宿主页的脚本往子 iframe 里注入隐藏 CSS + 中键守卫。
      * 它看起来完全合理，**但真机实测证明根本不生效**：
      *
      *   用 CDP 在真思源页面上量到（见 tools 里的 probe-origin）：
-     *     hostSrcHead      = blob:http://172.16.30.128:6806/7d77a594-…
-     *     innerOrigin      = http://172.16.30.128:8089
+     *     hostSrcHead      = blob:http://192.168.193.70:6806/7d77a594-…
+     *     innerOrigin      = http://192.168.193.70:8089
      *     innerDocReadable = false        ← ★ contentDocument === null ★
      *
      * 根因：blob: URL 继承的是**创建者**（思源，:6806）的 origin，
@@ -3960,7 +3947,7 @@ const __mod_embed = (() => {
      *
      * ★ 改为 blob: URL ★
      *   blob URL 继承**创建它的页面的 origin**（在这里就是思源页面的 origin：
-     *   http://172.16.30.128:6806）。有真实 origin 之后：
+     *   http://192.168.193.70:6806）。有真实 origin 之后：
      *     · 可以正常跨域加载 OO 的 api.js（它是 script 标签，不需要 CORS 头）
      *     · DocsAPI 发起的请求带上正常 Origin，OO 服务端能正常响应
      *   blob 用完要 revoke，这里在 iframe 卸载时由调用方负责。
@@ -5635,7 +5622,6 @@ const __mod_tree = (() => {
   const nodeKey = __mod_api.nodeKey;
   const webDiskUrl = __mod_api.webDiskUrl;
   const displayMountPath = __mod_api.displayMountPath;
-  const displayCrumbPath = __mod_api.displayCrumbPath;
   const typeIconEl = __mod_icons.typeIconEl;
   const diag = __mod_proxy.__exports.diag;
   const insertEmbedIntoDoc = __mod_embed.insertEmbedIntoDoc;
@@ -5683,23 +5669,92 @@ const __mod_tree = (() => {
   /* -------------------------------------------------------------------------
    * 菜单定位参数
    *
-   * ★★★ Menu.open() 的真实契约（2026-09-22 实测 + 反编译确认）★★★
+   * ★★★ 菜单显示入口：走 `openMenuAt(menu, ev)`，内部 **`open()` 优先** ★★★
    *
-   *   先说结论：**思源自己的每一处调用都是 `{ x, y, h, isLeft }`**。
-   *   在思源前端 bundle（main.<hash>.js）里 grep 全部 open( 调用点，
-   *   形如：
+   *   【2026-09-28 定案 —— 本条曾写错，现按实测改正，请勿再改回去】
    *
-   *       window.siyuan.menus.menu.popup({ x: W.right, y: W.bottom, h: W.height, isLeft: true })
-   *       menu.open({ x: S.left, y: S.bottom, h: S.height, w: S.width, isLeft: true })
+   *   思源里有**两个都叫 Menu 的类**，早前把它们的性质搞混了，导致结论张冠李戴：
    *
-   *   —— **`h` = 锚点元素的高度**，`isLeft` 决定向左还是向右展开。
-   *   没有任何一处传 clientHeight。而定位逻辑里读的也是 `position.h`：
+   *   ── 类 A：内部菜单（`window.siyuan.menus.menu` 的类，bundle 里叫 `te`）──
+   *      从容器内 /opt/siyuan/stage/build/app/common.<hash>.js 反编译 + 浏览器里
+   *      `Object.getPrototypeOf(window.siyuan.menus.menu)` 实测，该类**恰好 24 个方法**：
+   *        addItem, append, canDragSheet, closeSheet, emitCommonMenu,
+   *        finishSheetTouch, fullscreen, getFullscreenScrim, hideFullscreenScrim,
+   *        popup, preventDefault, remove, removeImmediately, removeScrollEvent,
+   *        resetPosition, setPopupPosition, setSheetHeight, showFullscreenScrim,
+   *        showSubMenu, startTrackingSheetViewport, startTrackingTargetPosition,
+   *        stopTrackingTargetPosition, updateMaxHeight, updateSheetTitle
+   *      ⇒ 类 A **有 `popup`，没有 `open`，也没有 `addSeparator`**。
+   *      `popup(T)` 里那句 `this.element.classList.remove("fn__none")` 才是真正显示。
    *
-   *       if (ae.h > 0) { ... 用 h 算向上/向下翻转 ... }
+   *   ── 类 B：插件 API 包装类（main.<hash>.js 模块 6959 导出 `W`）★★ 我们用的就是这个 ★★──
+   *      `new Menu(id, closeCallback, isStandalone)`。源码（关键部分）：
    *
-   *   反过来，这几个写法都**实测失败**：
-   *     · open({ x, y })                → 不抛，但**菜单不出现**（静默失败）
-   *     · open({ clientX, clientY })    → TypeError（见下）
+   *        constructor(c, a, C = !1) {
+   *          if (C) {                                  // 独立菜单：克隆一份
+   *            const h = window.siyuan.menus.menu.element.cloneNode(!0);
+   *            h.setAttribute("data-menu", "true");     // ★ 独立时才显式加此标记
+   *            ...; this.menu = new W1(h);
+   *          } else {
+   *            this.menu = window.siyuan.menus.menu;    // ★ 默认复用共享单例
+   *          }
+   *          this.element = this.menu.element;
+   *          if (c && !C) {                             // 传了 id 且复用单例
+   *            const h = this.menu.element.getAttribute("data-name");
+   *            h && h === c && (this.isOpen = !0);      // ★ 同名已开 ⇒ isOpen=true
+   *          }
+   *          if (this.menu.remove(), !this.isOpen) ...
+   *        }
+   *        addItem(c){ if(!this.isOpen) return this.menu.addItem(c) }
+   *        addSeparator(c, a = !1){ ... return this.menu.addItem({id, type:"separator", index}) }
+   *        showSubMenu(c){ this.menu.showSubMenu(c) }
+   *        open(c){ this.isOpen || this.menu.popup(c) }   // ★★★ 公开入口就是 open() ★★★
+   *        fullscreen(c = "all"){ this.isOpen || this.menu.fullscreen(c) }
+   *        close(){ this.menu.remove() }
+   *
+   *      ⇒ 类 B 只有 6 个公开方法：`addItem / addSeparator / showSubMenu /
+   *        open / fullscreen / close`（外加 `element` / `isOpen` / `menu` 属性）。
+   *        **它有 `open()`，反而没有 `popup`**；`open(c)` 内部才去调 A 的 `popup(c)`。
+   *
+   *   ★ 怎么确定我们用的是 B（不是 A）—— 用**调用栈**实测，不靠猜：
+   *
+   *       at proto.popup (<anonymous>)                            ← A 的 popup
+   *       at $.open (main.<hash>.js:4239:16357)                   ← B 的 open
+   *       at openMenuAt (plugin:siyuan-nebuladisk:5813)           ← 我们的封装
+   *       at FileTree.showMoreMenu (plugin:siyuan-nebuladisk:7619)
+   *
+   *     注意 `openMenuAt` 的**下一帧直接是 B 的 `open`**，中间没有我们自己调 popup 的帧
+   *     ⇒ 走的是 open 分支；而 `openMenuAt` 里 `popup` 分支之所以没走，正是因为
+   *     我们的对象**没有 `popup`**（B 没有）。另一条独立证据：`menu.addSeparator()`
+   *     有效（菜单里真的出现了 `.b3-menu__separator`），而 `addSeparator` 只存在于 B。
+   *
+   *     这两个探针就干这事，要复核/换思源版本时直接跑：
+   *       · tools/_probe-menu-which-class.cjs —— 把 A 的 popup 包一层抓调用栈，
+   *         一眼看出走的是哪条分支（**定案靠这个**）
+   *       · tools/_probe-menu-prototype.cjs  —— 枚举原型链方法 + 逐项测
+   *         open/popup/addSeparator 是否存在（拿类 A 的 24 个方法就靠它）
+   *
+   *   ⚠️ 所以：**早前「思源 Menu 没有 open()，所以 menu.open 抛 TypeError」的说法是错的**
+   *      —— 那是类 A 的性质，却被拿去解释类 B 的调用。
+   *      旧代码 `menu.open(menuAnchor(ev))` **本来就是合法调用**；用户最初
+   *      「点了什么都不显示」的真正原因见下面 ② —— **按钮缺 `data-menu="true"`**。
+   *      （换句话说：当时那个 bug 只有一层根因，不是两层。）
+   *
+   *   ★ 但仍然保留「open 优先、popup 兜底」的双分支，理由不是"修 bug"，而是**防御**：
+   *     插件 API 是外部契约，思源改版可能换名；两个分支都试，任一侧改名都不会变成
+   *     静默失效。若两个都没有则 `console.error` + toast（失败必须说出来）。
+   *
+   *   ★ 参数形状 `{ x, y, h }`（实测 B 的 `open` 收到的入参 keys 就是这三个）：
+   *     · `x` / `y` —— 锚点坐标（鼠标位置，或元素右下角）
+   *     · `h`       —— 锚点元素**高度**，A 的 setPopupPosition 里 `if (T.h > 0)`
+   *                    用它算向上/向下翻转；缺了不崩，只是不翻转。
+   *
+   *   ★★ 另一个必须知道的坑：类 B 的构造里 `if (this.menu.remove(), !this.isOpen) ...`
+   *      —— 它**每次 new 都会先 remove() 掉共享单例里已有的内容**，
+   *      而同名菜单已打开时会置 `isOpen = true`，此后 `addItem` / `open` **全部静默忽略**。
+   *      所以：**不要复用同一个 Menu 实例反复 open**，每次弹菜单都要 `new Menu(...)`。
+   *
+   * ---- 以下为历史排查记录（定位兜底链为何会断，仍然有效）----
    *
    *   那个 TypeError 的来历（顺着 stack 反编译出来的）：
    *     思源内部有个「工具栏高度」helper：
@@ -5732,9 +5787,25 @@ const __mod_tree = (() => {
       document.getElementById("sidebar") ||
       document.body;
 
-    const rect = tgt && tgt.getBoundingClientRect
-      ? tgt.getBoundingClientRect()
-      : { left: 0, top: 0, bottom: 20, height: 20, right: 0, width: 0 };
+    // ★ getBoundingClientRect 会**抛异常**，不只是可能不存在 ★
+    //   元素已脱离 DOM（刷新后重建、菜单锚点在条件渲染里被换掉）时，
+    //   Chrome/Electron 抛 "Failed to execute 'getBoundingClientRect'"。
+    //   早先只判了 `tgt && tgt.getBoundingClientRect`（存在性），
+    //   没包 try —— 于是异常一路上抛到 click 回调被吞，
+    //   **菜单又变成「点了什么都不显示」**（与 2026-09-28 那个 bug 同类现象）。
+    //   行为级测试 tools/_sim-menu-open-behavior.cjs 的用例5 抓到了这一点。
+    let rect = { left: 0, top: 0, bottom: 20, height: 20, right: 0, width: 0 };
+    if (tgt && typeof tgt.getBoundingClientRect === "function") {
+      try {
+        const r = tgt.getBoundingClientRect();
+        if (r && typeof r.height === "number") rect = r;
+      } catch (e) {
+        console.warn(
+          "[siyuan-nebuladisk] menuAnchor: 锚点 getBoundingClientRect 失败，" +
+          "退回默认坐标。原因：" + (e && e.message)
+        );
+      }
+    }
 
     return {
       x: hasCoords ? ev.clientX : Math.round(rect.left + rect.width),
@@ -5742,6 +5813,105 @@ const __mod_tree = (() => {
       // ★ 关键：思源用 h 做向上/向下翻转，缺了它就退回会断的兜底链
       h: Math.round(rect.height) || 20,
     };
+  }
+
+  /**
+   * 打开菜单 —— ★ 所有菜单显示都走这里，不要在各处直接调 open/popup ★
+   *
+   * 【2026-09-28 定案，修正了本条早前的错误叙述】
+   *
+   *   ★ **`open()` 优先** —— 插件 API 的 Menu（包装类，见文件顶部长注释）
+   *     公开方法就叫 `open`，它内部才去调内部类的 `popup`。
+   *     实测调用栈（决定性证据）：
+   *        at proto.popup (<anonymous>)                    ← 内部类 A
+   *        at $.open (main.<hash>.js:4239:16357)           ← 包装类 B（我们用的）
+   *        at openMenuAt (plugin:siyuan-nebuladisk:5813)   ← 本函数
+   *     注意本函数的下一帧**直接就是 B 的 open**，中间没有我们自己调 popup 的帧
+   *     ⇒ 真实走的是 open 分支。
+   *
+   *   ⚠️ 早前这里写的是「popup 优先」，理由是「Menu 没有 open」——那个理由**是错的**
+   *      （那是内部类 A 的性质，被误当成插件 API）。
+   *      好消息是这个错误**没有造成行为问题**：popup 分支对我们的对象永远为假
+   *      （B 没有 popup），会自动落到 open 兜底分支，结果是对的。
+   *      但留着错的理由更危险 —— 下次有人照它去「修」就会踩坑，故改正。
+   *
+   *   ★ 为什么仍保留两个分支（**这是防御，不是修 bug**）：
+   *     插件 API 是外部契约，思源改版可能换名。两个都试，任一侧改名都不会退化成
+   *     「静默失效」。两个都没有则 `console.error` + toast —— 失败必须说出来。
+   *
+   *   ★ 顺带记一条构造侧的坑（见文件顶部）：同名 Menu 若已开着，
+   *     包装类的 `isOpen` 会是 true，此后 `addItem` / `open` **全部静默忽略**。
+   *     ⇒ 每次弹菜单都要 `new Menu(...)`，不要复用实例。
+   *
+   * @param {object} menu    Menu 实例（来自 require("siyuan")）
+   * @param {object|null} ev 触发事件（可为 null，此时用 .nb-tree-bar 的右下角）
+   */
+  function openMenuAt(menu, ev) {
+    const pos = menuAnchor(ev);
+    // ★ open 优先：那是插件 API 的公开入口（包装类），参数同为 {x, y, h}
+    if (typeof menu.open === "function") {
+      menu.open(pos);
+      return;
+    }
+    // 兜底：内部菜单类的显示方法；将来思源若把插件 API 直接换成它也能用
+    if (typeof menu.popup === "function") {
+      menu.popup(pos);
+      return;
+    }
+    // 两条路都没有 —— 明确报出来，别让它变成"点了没反应"
+    console.error(
+      "[siyuan-nebuladisk] 菜单无法打开：Menu 实例既没有 open() 也没有 popup()。" +
+      " 思源版本可能变更了菜单 API。实例方法：" +
+      Object.getOwnPropertyNames(Object.getPrototypeOf(menu) || {}).join(",")
+    );
+    showToast("菜单打开失败：思源菜单接口不兼容（详见控制台）");
+  }
+
+  /**
+   * 菜单打开期间，抑制触发按钮自己那个 tooltip（否则它一直显示「更多」盖在菜单上）
+   *
+   * 【2026-09-28 实测定案】
+   *   用户反馈：「弹出后 一直显示『更多』这俩字」。
+   *   复现 + 量化（tools/_probe-tooltip-repro.cjs，读 ::after 的 computed 样式）：
+   *     初始            :focus-within=false  ::after opacity=0
+   *     合成 hover      :focus-within=false  ::after opacity=0   （合成事件不触发 CSS :hover）
+   *     点击后          :focus-within=TRUE   ::after opacity=1   ← tooltip 显示了
+   *   原因全在思源 base.css 原文：
+   *     .b3-tooltips::after{
+   *       z-index:1000000;            ← 比菜单的 z-index（++window.siyuan.zIndex）还高
+   *       content:attr(aria-label);   ← 内容就是 aria-label="更多"
+   *     }
+   *     .b3-tooltips:hover::after,
+   *     .b3-tooltips:focus-within::after{ opacity:1 }
+   *     .b3-tooltips__s::after{ top:100%; right:50%; margin-top:5px }  ← 按钮正下方=菜单位置
+   *   ⇒ 点按钮时浏览器先把焦点给它（mousedown 的默认行为），**焦点不丢 ⇒ `:focus-within`
+   *     恒为真 ⇒ tooltip 一直显示**；真实鼠标还会同时满足 `:hover`。
+   *     这正是「一直」二字（不是闪一下，是赖着不走）。
+   *
+   * 修法：给按钮打一个临时类 `is-menu-open`，配合 index.css 的
+   *     .nb-tree-btn.is-menu-open::after{ display:none !important }
+   * 在菜单开着的这段时间把 tooltip 关掉；下一次点击 / 按键时恢复，
+   * 于是**平时 hover 仍然有 tooltip（可用性不丢）**，只是不再盖菜单。
+   *
+   * 为什么用 document 捕获阶段的 click/keydown 来恢复（而不是监听菜单关闭）：
+   *   思源菜单是复用的单例元素，没有对外的事件可订阅；
+   *   而「关菜单」的用户动作必然是「点了某处」或「按了键」，覆盖这两者即可。
+   *   注册延后一拍（setTimeout 0），避免被**本次**点击立刻清掉。
+   *
+   * @param {HTMLElement} btn 触发菜单的按钮
+   */
+  function suppressTooltipWhileMenuOpen(btn) {
+    if (!btn || !btn.classList) return;
+    btn.classList.add("is-menu-open");
+    const restore = () => {
+      btn.classList.remove("is-menu-open");
+      document.removeEventListener("click", restore, true);
+      document.removeEventListener("keydown", restore, true);
+    };
+    setTimeout(() => {
+      document.addEventListener("click", restore, true);
+      document.addEventListener("keydown", restore, true);
+    }, 0);
   }
 
   class FileTree {
@@ -6296,40 +6466,94 @@ const __mod_tree = (() => {
       this.mountSel.onchange = () => {
         this.currentMount = this.mountSel.value;
         this.expanded.clear();
-        // 切换盘符时退出网格视图：不同盘的目录结构不同，
-        // 留在网格里会让用户以为"新盘就是这个目录"。回到树视图最不容易误解。
-        if (this.gridMode) {
-          this.gridMode = false;
-          if (this.gridBtn) {
-            this.gridBtn.innerHTML = `<svg><use xlink:href="#iconNbGrid"></use></svg>`;
-            this.gridBtn.setAttribute("aria-label", "切换到网格视图");
-          }
-        }
+        // ★ 2026-09-28：这里原有「切换盘符时退出网格视图」的一段重置逻辑，
+        //   网格模式已整体移除（用户要求），故一并删除。
         this.clearResults();
         this.loadRoot();
       };
       bar.appendChild(this.mountSel);
 
-      const mkBtn = (icon, title, handler) => {
+      // ★★★ 会打开菜单的按钮必须带 data-menu="true" ★★★
+      //
+      // 【2026-09-28 实测定案 —— 这就是「点更多什么都不显示」的**根因**】
+      //
+      //   bundle 里思源的全局「点击外部关闭菜单」处理器（common.js 模块 6987）：
+      //     const a = y => {
+      //       !window.siyuan.menus.menu.element.contains(y)
+      //       && !Th(y, "data-menu", "true")          // ← 关键判定
+      //       && ( … || window.siyuan.menus.menu.remove() )   // ← 关掉菜单
+      //     }
+      //     const b = y => { …; a(y.target); … }      // 全局 click 处理器
+      //
+      //   菜单是**复用的单例元素**（`window.siyuan.menus.menu`，
+      //   实测其 element 就是 DOM 里那个 `b3-menu fn__none`）。
+      //   我们点按钮时：onclick 先跑 ⇒ open()→popup() 把菜单项装进单例并显示；
+      //   **随后同一个 click 事件继续冒泡到 document** ⇒ 思源的 a() 判定
+      //   「目标不在菜单内，且没有 data-menu=true」⇒ 立刻 remove()。
+      //   而 remove() → removeImmediately() 做的事正是
+      //     `element.lastElementChild.innerHTML = ""` + `classList.add("fn__none")`
+      //   —— 与 MutationObserver 实测到的现象**逐条吻合**：
+      //     +21ms 内 `added b3-menu__item ×6 + b3-menu__separator ×2`
+      //     → `childList-in b3-menu__items {added:0, removed:8}`
+      //     → `attr:class b3-menu fn__none`
+      //   ⇒ 菜单「开了一下就被同一击关掉」，用户看到的就是「什么都不显示」。
+      //
+      //   ★ 这条**就是唯一根因**。早前一度以为还有「第一层：Menu 没有 open()」
+      //     ——那个判断**是错的**（见文件顶部长注释：那是内部类的性质，
+      //     插件 API 的包装类是有 open 的），已改正。别再去"修"那个不存在的问题。
+      //
+      //   ★ 独立菜单自带这个标记（反证共享单例没有）★
+      //     包装类构造里，只有 `isStandalone = true` 分支克隆元素时才显式
+      //     `h.setAttribute("data-menu", "true")`；复用共享单例时不加。
+      //     所以用单例弹菜单的元素，**必须自己把标记打在触发按钮上**。
+      //
+      //   思源自身的同类按钮就是这么标的（common.js 原文）：
+      //     <span data-type="more" data-menu="true" class="block__icon ariaLabel"
+      //           aria-label="更多"><svg><use xlink:href="#iconMore"></use></svg>
+      //
+      //   ⇒ 凡 handler 里会弹菜单的按钮，一律加 `data-menu="true"`。
+      const mkBtn = (icon, title, handler, opensMenu) => {
         const b = document.createElement("button");
         b.className = "b3-tooltips b3-tooltips__s nb-tree-btn";
         b.setAttribute("aria-label", title);
+        // ★ 弹菜单的按钮必须打这个标记，否则菜单会被思源的全局 click 处理器秒关
+        if (opensMenu) b.setAttribute("data-menu", "true");
         b.innerHTML = `<svg><use xlink:href="#${icon}"></use></svg>`;
-        b.onclick = handler;
+        b.onclick = (ev) => {
+          handler(ev);
+          // ★ 弹了菜单就顺手把自身 tooltip 压住 —— 否则「更多」会一直浮在菜单上
+          //   （原因见 suppressTooltipWhileMenuOpen 的长注释）
+          if (opensMenu) suppressTooltipWhileMenuOpen(b);
+        };
         return b;
       };
-      bar.appendChild(mkBtn("iconRefresh", "刷新", () => this.refresh(true)));
+      // ★ 工具条「刷新」= 普通刷新，**保留展开状态** ★
+      //   这里原本是 `this.refresh(true)`（会 clear 掉 expanded ⇒ 刷新后整棵树收起），
+      //   与 README 承诺的「展开状态会记住，刷新后回到原处」相反 —— 长期笔误。
+      //   2026-09-28：随「刷新并重置展开状态」菜单项的删除，deep 能力整体移除，
+      //   本按钮改为 this.refresh()。详见 refresh() 的注释。
+      bar.appendChild(mkBtn("iconRefresh", "刷新", () => this.refresh()));
       bar.appendChild(mkBtn("iconSearch", "搜索（全盘，含未加载的子目录）", () => this.toggleFilter()));
 
-      // ★ 任务㉑：网格 / 列表 视图切换 ★
-      //   用户原话：「增加网格显示模式，双击进去下级文件夹。」
-      //   网格模式下双击 = 进入该文件夹（列表模式的"双击目录 = 展开树"语义
-      //   在网格里没有意义，因为网格不显示层级）。
-      this.gridMode = false;
-      this.gridBtn = mkBtn("iconNbGrid", "切换到网格视图", () => this.toggleGrid());
-      bar.appendChild(this.gridBtn);
+      // ★ 2026-09-28：网格 / 列表视图切换按钮已删除（用户要求）★
+      //
+      //   用户原话：「去掉文件夹 网格视图方式，同时去掉这个按钮。」
+      //
+      //   连带删除的东西（全部核对过，无残留引用）：
+      //     · 本文件：gridMode / gridBtn / toggleGrid() / renderGrid() /
+      //       makeGridCell()、loadRoot() 里的 is-grid 类移除
+      //     · src/icons.js：iconNbGrid / iconNbList 两个 <symbol>
+      //     · index.css：.nb-tree-body.is-grid / .nb-grid-nav / .nb-grid-up /
+      //       .nb-grid-crumb / .nb-grid / .nb-cell* 全部样式
+      //
+      //   ⚠️ 唯一值得担心的连带影响 —— **搜索结果双击目录**：
+      //     它的落点是 _jumpToDir() → revealPath()，而 revealPath 走的是
+      //     **树展开**路线（loadRoot + this.expanded 逐级登记 + 找 DOM 高亮），
+      //     **完全不依赖 gridMode**。所以删掉网格后双击目录照常工作。
+      //     （这一条是逐个函数读过来确认的，不是推测。）
 
-      bar.appendChild(mkBtn("iconMore", "更多", (ev) => this.showMoreMenu(ev)));
+      // 「更多」按钮：handler 里会弹菜单 ⇒ 必须 opensMenu=true（见上方长注释）
+      bar.appendChild(mkBtn("iconMore", "更多", (ev) => this.showMoreMenu(ev), true));
       this.el.appendChild(bar);
 
       // ---- 搜索框（默认隐藏）----
@@ -6592,11 +6816,13 @@ const __mod_tree = (() => {
       const token = ++this._renderToken;
       // 每轮重新渲染都把「展开调用计数」归零，避免累计误触发上限
       this._expandSeq = 0;
-      // ★ 任务㉑：树视图渲染前先摘掉网格样式 ★
-      //   grid 会把 .nb-tree-body 变成 CSS Grid（display:grid），
-      //   树的层级结构在 grid 下会被摊平，看起来全乱。
+      // ★ 2026-09-28：这里原有「树视图渲染前先摘掉 .is-grid 类」的一段
+      //   （网格模式会把 .nb-tree-body 变成 CSS Grid，需在渲染树前还原）。
+      //   网格模式已整体移除，该还原动作随之删除。
+      //   ⚠️ style.display="" 这一句**必须保留** —— 它不只是给网格用的：
+      //     搜索结果面板打开时会把 treeEl 设成 display:none（见 renderResults），
+      //     回到树视图时正靠这一句把 display 复位。删了会导致树"回来但看不见"。
       if (this.treeEl) {
-        this.treeEl.classList.remove("is-grid");
         this.treeEl.style.display = "";
       }
       this.treeEl.innerHTML = "";
@@ -7275,11 +7501,28 @@ const __mod_tree = (() => {
       }
     }
 
-    async refresh(deep = false) {
-      if (deep) this.expanded.clear();
-      const keep = new Set(this.expanded);
-      // 展开状态要保留 —— 先记下来再重建
-      this.expanded = keep;
+    /**
+     * 刷新：重新拉取盘符与当前目录。
+     *
+     * ★ 展开状态**刻意保留**（2026-09-28 定案）★
+     *   原签名是 `refresh(deep = false)`，`deep=true` 时 `this.expanded.clear()`
+     *   —— 那是给「更多」菜单里那一项「刷新并重置展开状态」用的。
+     *   该菜单项已按用户要求删除，**这个「重置展开」能力也一并删掉**
+     *   （用户原话：「删除 刷新并重置展开状态 按钮及其功能」），所以这里不再有 deep 参数。
+     *
+     *   ⚠️ 连带修正了一处长期笔误：工具条那个「刷新」按钮原本调的是
+     *      `this.refresh(true)` —— 也就是说**每次点「刷新」，整棵目录树都会全部收起**。
+     *      而 README 明确承诺的是「展开状态会记住，刷新后回到原处」
+     *      （README.zh_CN.md 第 20 行 / README.md 第 25 行：
+     *        "Expansion state is remembered across refreshes"）。
+     *      即按钮行为与文档承诺相反。删掉 deep 之后，工具条「刷新」变回
+     *      `this.refresh()`，与 README 一致。
+     *
+     *   顺带清掉的死代码：原来还有
+     *      const keep = new Set(this.expanded); this.expanded = keep;
+     *   这只是把 Set 复制一份再赋回去 —— 前后完全等价，没有任何作用。
+     */
+    async refresh() {
       await this.loadMounts();
     }
 
@@ -7310,7 +7553,8 @@ const __mod_tree = (() => {
      * ================================================================== */
 
     /**
-     * 算出「在浏览器中打开网盘」应该落到哪。
+     * 算出「打开网盘」应该落到哪。
+     * （该菜单项 2026-09-28 前叫「在浏览器中打开网盘」。）
      *
      *   · 有选中行：
      *       文件夹 ⇒ 就是这个目录本身
@@ -7346,11 +7590,28 @@ const __mod_tree = (() => {
         label: "刷新",
         click: () => this.refresh(),
       });
-      menu.addItem({
-        icon: "iconRefresh",
-        label: "刷新并重置展开状态",
-        click: () => this.refresh(true),
-      });
+
+      // ★ 2026-09-28：删除「刷新并重置展开状态」菜单项及其功能 ★
+      //
+      //   用户原话：「删除 刷新并重置展开状态 按钮及其功能」。
+      //
+      //   连带删除的东西（全部核对过，无残留引用）：
+      //     · 本菜单项本身（原 click 为 this.refresh(true)）
+      //     · Tree.refresh() 的 `deep` 形参 —— 以及 `if (deep) this.expanded.clear()`
+      //       ⇒ 「重置展开状态」这个能力在插件里**整体不存在了**
+      //     · 原实现里那段等价于空操作的死代码
+      //       （const keep = new Set(this.expanded); this.expanded = keep;）
+      //     · 工具条「刷新」按钮由 this.refresh(true) 改回 this.refresh()
+      //       （它原本会清空展开，与 README 承诺相反，见 refresh() 注释）
+      //
+      //   ⚠️ 连带调用点**共 4 处**，全部已改（踩过一次：只 grep 了 src/ 与 tools/，
+      //      漏掉根文件 index.js，于是在注释里错写成「全仓确认过，没有别处调用」；
+      //      实际 index.js 里还有 3 处 this.tree.refresh(true)：
+      //        ① addCommand("refreshNebulaDisk") 的 callback
+      //        ② 设置面板「立即登录」成功后
+      //        ③ 保存设置后
+      //      教训：**grep 要覆盖 index.js 根文件**，别只扫 src/ 和 tools/。
+      //      现在 index.js 里这三处都是 refresh()，K7i2 断言会兜住回退）。
       menu.addSeparator();
       menu.addItem({
         icon: "iconContract",
@@ -7369,9 +7630,11 @@ const __mod_tree = (() => {
       //   网盘前端 app.js 的 applyDeepLink() 会直接打开那个目录。
       //   有选中节点 ⇒ 开到它的父目录（文件）或它自己（文件夹）；
       //   没有选中 ⇒ 退回首页（保持原行为，至少不是坏链接）。
+      //
+      //   2026-09-28：标签由「在浏览器中打开网盘」改名为「打开网盘」（用户要求）。
       menu.addItem({
         icon: "iconLink",
-        label: "在浏览器中打开网盘",
+        label: "打开网盘",
         click: () => {
           const base = this.plugin.settings.serverUrl;
           if (!base) { showToast("请在插件设置中填写网盘地址"); return; }
@@ -7380,8 +7643,22 @@ const __mod_tree = (() => {
           window.open(webDiskUrl(base, target.mount, target.path), "_blank", "noopener");
         },
       });
+      // ★ 2026-09-28：图标 iconLogout → iconQuit ★
+      //
+      //   用户反馈「退出登录前面增加图标」（= 这一项没有图标）。
+      //   实测根因：`iconLogout` 这个 symbol 在思源里**根本不存在**
+      //   —— 思源运行时雪碧图共 263–270 个 symbol，同菜单其余 5 项的图标
+      //   （iconRefresh / iconContract / iconSettings / iconLink）全部命中，
+      //   唯独 iconLogout 命不中（document.getElementById('iconLogout') === null），
+      //   于是 <use xlink:href="#iconLogout"> 渲染成空白。
+      //   实测方法见 tools/_probe-icon-diag.cjs（在真实页面里逐项报 href 与
+      //   symbolExists，而不是靠肉眼看截图）。
+      //
+      //   换成 iconQuit —— 雪碧图里真实存在，且正是思源自己给「退出」用的名字。
+      //   ⚠️ 别再改回 iconLogout；这一类错误的特征是**静默空白**，
+      //      不报错、不白屏，只能靠 symbolExists 检查抓出来。
       menu.addItem({
-        icon: "iconLogout",
+        icon: "iconQuit",
         label: "退出登录",
         click: async () => {
           await API.logout();
@@ -7390,7 +7667,7 @@ const __mod_tree = (() => {
           this.renderLoginPrompt();
         },
       });
-      menu.open(menuAnchor(ev));
+      openMenuAt(menu, ev);
     }
 
     showNodeMenu(ev, entry) {
@@ -7487,7 +7764,7 @@ const __mod_tree = (() => {
         click: () => this.confirmDelete(entry),
       });
 
-      menu.open(menuAnchor(ev));
+      openMenuAt(menu, ev);
     }
 
     /* =====================================================================
@@ -7547,7 +7824,11 @@ const __mod_tree = (() => {
         // ★ 任务27：「复制路径」已按用户要求删除，这里不能再引导用户去用它。
         //   目录本来就没有单文件直链（rawlink 只服务文件），
         //   所以要给一个**存在且真的有用**的替代动作：打开网盘网页版定位到该目录。
-        showToast("文件夹没有直链，请用「在浏览器中打开网盘」");
+        // ★ 2026-09-28：文案里的菜单名同步改名 —— 原写「在浏览器中打开网盘」，
+        //   而那一项已按用户要求改名为「打开网盘」。留着旧名会把用户
+        //   指向一个**菜单上根本找不到的名字**。
+        //   （这条是 K7i6 反向断言在剥注释后抓出来的，不是靠肉眼扫。）
+        showToast("文件夹没有直链，请用「打开网盘」");
         return;
       }
       try {
@@ -7969,161 +8250,6 @@ const __mod_tree = (() => {
       await this.revealPath(this.currentMount, dirPath);
     }
 
-    /* =====================================================================
-     * 网格视图（任务㉑）
-     * ================================================================== */
-
-    /**
-     * 网格 / 列表 切换。
-     *
-     * 用户原话：「增加网格显示模式，双击进去下级文件夹。」
-     *
-     * ★ 语义差异（有意为之）★
-     *   列表：双击目录 = 原地展开/收起（看层级）
-     *   网格：双击目录 = **进入**下一级（像文件管理器），带「↑ 上一级」
-     *   网格不显示层级，所以"展开"没有意义 —— 必须能上下走。
-     *
-     * ★ 为什么网格不重建树而是另起一套渲染 ★
-     *   树节点之间有 _children / _loaded / expanded 等一大堆状态。
-     *   在网格里复用它，两层语义会互相打架（网格"进入"到底算不算展开？）。
-     *   所以网格用**单层目录视图**（只列当前目录的直接子项），
-     *   状态只有一个 currentPath，简单且不会和树状态串味。
-     *   代价是切回列表时要重新 loadRoot() —— 可接受。
-     */
-    async toggleGrid() {
-      this.gridMode = !this.gridMode;
-      if (this.gridBtn) {
-        this.gridBtn.innerHTML =
-          `<svg><use xlink:href="#${this.gridMode ? "iconNbList" : "iconNbGrid"}"></use></svg>`;
-        this.gridBtn.setAttribute(
-          "aria-label", this.gridMode ? "切换到列表视图" : "切换到网格视图");
-      }
-      this.clearResults();
-      if (this.gridMode) {
-        this.gridPath = "";
-        await this.renderGrid();
-      } else {
-        await this.loadRoot();
-      }
-    }
-
-    /** 渲染网格（单层，只列 gridPath 的直接子项） */
-    async renderGrid() {
-      if (!this.treeEl) return;
-      this.treeEl.style.display = "";
-      this.treeEl.classList.add("is-grid");
-      this.treeEl.innerHTML = `<div class="nb-tree-empty">加载中…</div>`;
-
-      let r;
-      try {
-        r = await API.list(this.currentMount, this.gridPath || "");
-      } catch (e) {
-        this.treeEl.innerHTML = "";
-        const err = document.createElement("div");
-        err.className = "nb-tree-empty";
-        err.textContent = `加载失败：${(e && e.message) || e}`;
-        this.treeEl.appendChild(err);
-        return;
-      }
-
-      this.treeEl.innerHTML = "";
-
-      // 面包屑 + 上一级
-      const nav = document.createElement("div");
-      nav.className = "nb-grid-nav";
-      if (this.gridPath) {
-        const up = document.createElement("button");
-        up.className = "nb-grid-up";
-        up.textContent = "↑ 上一级";
-        up.onclick = () => {
-          const i = String(this.gridPath).lastIndexOf("/");
-          this.gridPath = i > 0 ? String(this.gridPath).slice(0, i) : "";
-          this.renderGrid();
-        };
-        nav.appendChild(up);
-      }
-      // 网格里"在页签中打开当前目录"没有意义，但显示路径很有用
-      const crumb = document.createElement("span");
-      crumb.className = "nb-grid-crumb";
-      // ★ #54：面包屑用 displayCrumbPath（与网盘 Web UI 同款：`售前项目 / a / b`）。
-      //   不再用 displayMountPath —— 它给的是完整路径 `售前项目:/`，
-      //   放进一行导航文本里就成了用户报的「/:售前项目」那种怪形。
-      crumb.textContent = displayCrumbPath(this.currentMount, this.gridPath || "");
-      // 悬浮提示仍给**完整路径**（需要精确复制时有用），两者刻意不同
-      crumb.title = displayMountPath(this.currentMount, this.gridPath || "");
-      nav.appendChild(crumb);
-      this.treeEl.appendChild(nav);
-
-      const grid = document.createElement("div");
-      grid.className = "nb-grid";
-      const entries = (r && r.entries) || [];
-      if (!entries.length) {
-        const empty = document.createElement("div");
-        empty.className = "nb-tree-empty";
-        empty.textContent = "空目录";
-        grid.appendChild(empty);
-      }
-      for (const e of entries) {
-        grid.appendChild(this.makeGridCell(e));
-      }
-      this.treeEl.appendChild(grid);
-    }
-
-    /** 网格里的一个格子 */
-    makeGridCell(e) {
-      const cell = document.createElement("div");
-      cell.className = "nb-cell" + (e.isDir ? " is-dir" : "");
-      cell.dataset.name = e.name || "";
-      cell.title = `${e.name}\n${displayMountPath(this.currentMount, e.path || "")}`;
-
-      const iconBox = document.createElement("div");
-      iconBox.className = "nb-cell-icon";
-      // ★ 任务25b：同上 —— 传 (ext, isDir)，目录走文件夹图标分支。
-      try { iconBox.appendChild(typeIconEl(e.ext || extOf(e.name), !!e.isDir)); } catch { /* 忽略 */ }
-      cell.appendChild(iconBox);
-
-      const name = document.createElement("div");
-      name.className = "nb-cell-name";
-      name.textContent = e.name || "";
-      cell.appendChild(name);
-
-      // ★ 网格核心交互：双击进去下级文件夹 ★
-      cell.ondblclick = (ev) => {
-        ev.stopPropagation();
-        if (e.isDir) {
-          this.gridPath = String(e.path || "");
-          this.renderGrid();
-        } else {
-          this.activateFile({
-            path: e.path, name: e.name, ext: e.ext,
-            size: e.size, mtime: e.mtime, isDir: false,
-          }, false);
-        }
-      };
-      // 单击只选中
-      cell.onclick = (ev) => {
-        ev.stopPropagation();
-        this.treeEl.querySelectorAll(".nb-cell.is-selected")
-          .forEach((n) => n.classList.remove("is-selected"));
-        cell.classList.add("is-selected");
-      };
-      cell.oncontextmenu = (ev) => {
-        ev.preventDefault();
-        ev.stopPropagation();
-        this.showNodeMenu(ev, {
-          path: e.path, name: e.name, isDir: !!e.isDir,
-          ext: e.ext, size: e.size, mtime: e.mtime, readonly: e.readonly,
-        });
-      };
-
-      // ★ 任务30 顺带：网格格子也能拖进文档 ★
-      //   网格视图（任务㉑）是与搜索/树并列的第三个入口，同样缺这段接线。
-      //   用户这次只点名了「搜索结果」，但三处语义一致，漏掉网格 = 下次还要再报一次。
-      this.attachEmbedDrag(cell, {
-        path: e.path, name: e.name, isDir: !!e.isDir,
-      });
-      return cell;
-    }
 
     /**
      * 把输入解析成一组「小写子串」。
@@ -8730,7 +8856,7 @@ const __mod_viewer = (() => {
      *
      *   OnlyOffice 的 DocEditor 会把自己渲染进一个 iframe，而这个 iframe 的
      *   origin 是 **NEBULA_OO_PUBLIC**（实测 http://192.168.193.70:8082），
-     *   与思源页面的 origin（http://172.16.30.128:6806）**不同源**。
+     *   与思源页面的 origin（http://192.168.193.70:6806）**不同源**。
      *   同源策略下，父页面无法读取/修改跨域 iframe 的 DOM，
      *   所以「用 CSS 把 OO 左栏藏掉」在跨域部署里**做不到**。
      *
@@ -8970,7 +9096,7 @@ const __mod_viewer = (() => {
      *     （已实测：v2 签名把 dl 并入 HMAC 输入，篡改必 403。）
      *
      *   signedRawUrl(mount, path, true) 已经内含 browserReachableUrl()，
-     *   主机名改写（nebula:8088 → 172.16.30.128:8089）不用在这里重复做。
+     *   主机名改写（nebula:8088 → 192.168.193.70:8089）不用在这里重复做。
      */
     async copyLink() {
       try {
@@ -9254,10 +9380,10 @@ const __mod_index = (() => {
    * ★ 为什么不写死 IP ★
    *   同一个插件会被两种完全不同的思源加载：
    *     · 桌面端（本机装，Electron）—— 页面在 127.0.0.1:6806
-   *     · 服务端（NAS 上用 Docker 跑，浏览器访问）—— 页面在 172.16.30.128:6806
+   *     · 服务端（NAS 上用 Docker 跑，浏览器访问）—— 页面在 192.168.193.70:6806
    *   写死 192.168.193.70（ZeroTier 地址）时，浏览器端经常解析不到，
    *   表现就是「图标有、点了连不上」，用户完全不知道为什么。
-   *   实测：NAS 上的思源容器访问 172.16.30.128:8089 是通的。
+   *   实测：NAS 上的思源容器访问 192.168.193.70:8089 是通的。
    *
    *   因此默认值跟随**当前页面所在主机**：网盘和思源本来就部署在同一台机器上，
    *   用页面 hostname 拼 8089 在两种场景下都成立。
@@ -9539,7 +9665,9 @@ const __mod_index = (() => {
         step("bindPluginApi", () => bindPluginApi(this, API));
         step("registerEmbed", () => registerEmbed(this));
 
-        diag("  → addTab/addDock/addTopBar");
+        // ★ 2026-09-28：日志里去掉 addTopBar —— 顶栏按钮已整段移除，
+        //   留着这个词会让今后看日志的人以为"顶栏还有按钮"（实测会误导）。
+        diag("  → addTab/addDock（顶栏按钮已移除）");
 
         // 4) 注册页签类型（预览 / 编辑）
         this.addTab({
@@ -9595,30 +9723,30 @@ const __mod_index = (() => {
         },
       });
 
-      // 6) 顶栏按钮
-      this.addTopBar({
-        icon: "iconNebulaDisk",
-        title: this.i18n.dockTitle || "NebulaDisk",
-        position: "right",
-        callback: () => this.openDockPanel(),
-        contextMenu: (menu) => {
-          menu.addItem({
-            icon: "iconSettings",
-            label: this.i18n.settingsTitle || "设置",
-            click: () => this.openSetting(),
-          });
-          menu.addItem({
-            icon: "iconRefresh",
-            label: this.i18n.refreshAll || "刷新",
-            click: () => this.tree && this.tree.refresh(true),
-          });
-          menu.addItem({
-            icon: "iconLink",
-            label: this.i18n.openInBrowser || "在浏览器中打开网盘",
-            click: () => window.open(this.settings.serverUrl, "_blank"),
-          });
-        },
-      });
+      // 6) 顶栏按钮 —— ★ 已按用户要求整段移除（2026-09-28）★
+      //
+      //   用户原话：「界面上有两个按钮，删除顶部那个。」
+      //
+      //   删掉的是 **思源主窗口最顶栏右侧** 那个 NebulaDisk 云朵图标
+      //   （原 addTopBar({ position: "right" })，含它的右键菜单：
+      //     设置 / 刷新 / 在浏览器中打开网盘）。
+      //
+      //   ⚠️ 为什么整段删而不是隐藏：
+      //     用户要的是"界面上不要这个按钮"。做成 display:none 会让
+      //     顶栏留下一个看不见但占位的热点，鼠标划过去还会触发 tooltip，
+      //     比直接不注册更让人困惑。
+      //
+      //   ★ 功能没有丢失（入口仍在，逐条核对过）★
+      //     · 打开面板  ⇒ 右侧停靠栏图标（addDock，见上）
+      //                    + 命令面板「打开 NebulaDisk」+ 快捷键 ⌥⌘N
+      //     · 插件设置  ⇒ 停靠栏「更多」菜单里的「插件设置」
+      //                    + 思源「设置 → 集市 → 已下载 → NebulaDisk」的齿轮
+      //     · 刷新      ⇒ 停靠栏「更多」菜单（刷新 / 刷新并重置展开状态）
+      //     · 打开网盘  ⇒ 停靠栏「更多」菜单里的「在浏览器中打开网盘」
+      //                    + 每个文件右键菜单的「浏览器打开」
+      //
+      //   ⇒ 若日后要恢复：把 addTopBar 那段原样贴回本行下方即可，
+      //     上面四条入口是**冗余**的，恢复后不会冲突。
 
       // 7) 命令
       //
@@ -9635,7 +9763,11 @@ const __mod_index = (() => {
       });
       this.addCommand({
         langKey: "refreshNebulaDisk",
-        callback: () => this.tree && this.tree.refresh(true),
+        // ★ 2026-09-28：原本是 this.tree.refresh(true) —— 那个 true 会让
+        //   「刷新」顺带清空目录树的展开状态（与 README「刷新后回到原处」相反）。
+        //   「重置展开」能力已随菜单项一起删除，refresh() 现在也不接受该参数，
+        //   留着 true 只会是**看着有效、实则被忽略**的死参数，故一并清掉。
+        callback: () => this.tree && this.tree.refresh(),
       });
 
       // 8) 斜杠菜单（笔记内嵌入口）
@@ -10049,7 +10181,7 @@ const __mod_index = (() => {
           const name = r?.display || r?.username || s.username;
           showMessage(`已登录：${name}`);
           // 登录成功后顺手把盘列表拉一次，便于立刻在侧边栏看到
-          if (this.tree) this.tree.refresh(true);
+          if (this.tree) this.tree.refresh();
         } catch (e) {
           showMessage(`登录失败：${e.message}`, 6000, "error");
         }
@@ -10070,7 +10202,10 @@ const __mod_index = (() => {
       dlg.bindInput(async () => {
         await this.saveSettings();
         dlg.destroy();
-        if (this.tree) this.tree.refresh(true);
+        // ★ 2026-09-28：原为 refresh(true)（会清空展开状态）。该能力已随
+        //   「刷新并重置展开状态」菜单项一起移除，refresh() 也不再接受该参数
+        //   —— 留着 true 是"看着有效、实则被忽略"的死参数。
+        if (this.tree) this.tree.refresh();
         return true;
       });
     }

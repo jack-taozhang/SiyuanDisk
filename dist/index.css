@@ -47,6 +47,27 @@
 .nb-tree-btn:hover { background: var(--b3-list-hover); }
 .nb-tree-btn svg { width: 14px; height: 14px; fill: currentColor; }
 
+/* ★ 菜单打开期间抑制本按钮的 tooltip ★
+ *
+ * 现象（用户反馈）：「弹出后 一直显示『更多』这俩字」。
+ *
+ * 原因：思源 base.css 里 .b3-tooltips 的 tooltip 由
+ *     .b3-tooltips:hover::after, .b3-tooltips:focus-within::after { opacity:1 }
+ *   驱动，且
+ *     .b3-tooltips::after { z-index:1000000; content:attr(aria-label) }
+ *     .b3-tooltips__s::after { top:100% }        ← 就在按钮正下方，即菜单弹出的位置
+ *   点击按钮时浏览器先把焦点给它，**焦点不丢 ⇒ :focus-within 恒真**，
+ *   于是 tooltip 一直显示，还因为 z-index 极高而盖在菜单上方。
+ *   实测（tools/_probe-tooltip-repro.cjs）：
+ *     初始 ::after opacity=0  →  点击后 :focus-within=true, ::after opacity=1
+ *
+ * 修法：tree.js 在弹出菜单时给按钮加 .is-menu-open，这里负责把它压住。
+ * 用 !important 是因为与思源那条 :focus-within 规则**特异性相同**（都是 2 个类），
+ * 而插件 CSS 与 base.css 的加载顺序不由我们掌控 —— 不加就无法保证覆盖。
+ * 平时 hover 不受影响（没这个类），tooltip 可用性不丢。
+ */
+.nb-tree-btn.is-menu-open::after { display: none !important; }
+
 .nb-tree-filter { padding: 4px 6px; }
 .nb-tree-filter input { height: 26px; font-size: 12px; }
 
@@ -248,93 +269,6 @@
   padding: 0 1px;
 }
 
-/* ==========================================================================
- * 任务㉑：网格视图
- * ========================================================================== */
-.nb-tree-body.is-grid {
-  display: flex;
-  flex-direction: column;
-}
-
-.nb-grid-nav {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  padding: 4px 6px;
-  border-bottom: 1px solid var(--b3-border-color);
-  flex-shrink: 0;
-}
-
-.nb-grid-up {
-  font-size: 11px;
-  padding: 1px 6px;
-  border: 1px solid var(--b3-border-color);
-  border-radius: var(--b3-border-radius);
-  background: var(--b3-theme-surface);
-  color: var(--b3-theme-on-surface);
-  cursor: pointer;
-  flex-shrink: 0;
-}
-.nb-grid-up:hover { background: var(--b3-list-hover); }
-
-.nb-grid-crumb {
-  font-size: 11px;
-  color: var(--b3-theme-on-surface-light);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  direction: rtl;          /* 同上：长路径保住末级 */
-  text-align: left;
-}
-
-.nb-grid {
-  display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(78px, 1fr));
-  /* ★ 任务25a：固定行高 ★
-     以前没写 grid-auto-rows，默认是 auto ⇒ 配合 .nb-grid{flex:1} 撑满高度时，
-     Grid 的 align-content 默认 stretch ⇒ **每一行都被拉伸去填满整个容器**，
-     文件少的时候每个格子就占了整屏高度（用户报的「占据了整个高度」）。
-     现在：行高固定 92px + align-content:start（多出来的空间留在底部，不摊到格子上）。*/
-  grid-auto-rows: 92px;
-  align-content: start;
-  gap: 4px;
-  padding: 6px;
-  overflow: auto;
-  flex: 1;
-  min-height: 0;
-}
-
-.nb-cell {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  justify-content: flex-start;
-  gap: 4px;
-  padding: 8px 4px 6px;
-  border-radius: var(--b3-border-radius);
-  cursor: pointer;
-  user-select: none;
-  min-width: 0;
-  /* ★ 任务25a：格子自身也不许被拉伸 ★
-     固定高度 + box-sizing，保证与 grid-auto-rows 一致。 */
-  height: 92px;
-  box-sizing: border-box;
-  overflow: hidden;
-}
-
-.nb-cell:hover { background: var(--b3-list-hover); }
-.nb-cell.is-selected { background: var(--b3-list-hover); }
-
-.nb-cell-icon {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  /* ★ 任务25a：图标区固定高度（不随行高浮动） */
-  height: 40px;
-  flex-shrink: 0;
-}
-/* ★ 任务29：网格里的图标整体放大到「资源管理器」那种醒目程度 */
-.nb-cell-icon .nb-type-icon { width: 34px; height: 34px; }
 
 /* ★ 任务29：目录用琥珀色实心文件夹（与网盘 Web UI 同一套画法） */
 .nb-type-icon--dir {
@@ -343,17 +277,6 @@
   color: #e8a33d;
 }
 
-.nb-cell-name {
-  font-size: 11px;
-  line-height: 1.25;
-  text-align: center;
-  width: 100%;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  color: var(--b3-theme-on-surface);
-  flex-shrink: 0;
-}
 .nb-node-err { color: var(--b3-card-error-color); }
 
 /* ---- 文件类型图标（网盘风格彩色文档） ----

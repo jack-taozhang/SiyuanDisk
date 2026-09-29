@@ -356,7 +356,7 @@ export class Viewer {
    *
    *   OnlyOffice 的 DocEditor 会把自己渲染进一个 iframe，而这个 iframe 的
    *   origin 是 **NEBULA_OO_PUBLIC**（实测 http://192.168.193.70:8082），
-   *   与思源页面的 origin（http://172.16.30.128:6806）**不同源**。
+   *   与思源页面的 origin（http://192.168.193.70:6806）**不同源**。
    *   同源策略下，父页面无法读取/修改跨域 iframe 的 DOM，
    *   所以「用 CSS 把 OO 左栏藏掉」在跨域部署里**做不到**。
    *
@@ -596,7 +596,7 @@ export class Viewer {
    *     （已实测：v2 签名把 dl 并入 HMAC 输入，篡改必 403。）
    *
    *   signedRawUrl(mount, path, true) 已经内含 browserReachableUrl()，
-   *   主机名改写（nebula:8088 → 172.16.30.128:8089）不用在这里重复做。
+   *   主机名改写（nebula:8088 → 192.168.193.70:8089）不用在这里重复做。
    */
   async copyLink() {
     try {

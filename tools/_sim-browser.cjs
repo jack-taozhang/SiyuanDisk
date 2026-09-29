@@ -69,10 +69,10 @@ const sandbox = {
     addEventListener() {},
   },
   location: {
-    // ★ 关键：NAS 思源是 http://172.16.30.128:6806，不是 file://
-    href: "http://172.16.30.128:6806/stage/build/desktop/",
-    origin: "http://172.16.30.128:6806",
-    hostname: "172.16.30.128",
+    // ★ 关键：NAS 思源是 http://192.168.193.70:6806，不是 file://
+    href: "http://192.168.193.70:6806/stage/build/desktop/",
+    origin: "http://192.168.193.70:6806",
+    hostname: "192.168.193.70",
     protocol: "http:",
     port: "6806",
   },
@@ -180,7 +180,7 @@ if (typeof exp !== "function") {
     }
 
     // 直接问 api 层：当前通道是什么？
-    inst.settings.serverUrl = "http://172.16.30.128:8089";
+    inst.settings.serverUrl = "http://192.168.193.70:8089";
     const kind = inst.api.currentKind();
     console.log("  api.currentKind()  =", kind);
     if (kind !== "direct") {
@@ -191,7 +191,7 @@ if (typeof exp !== "function") {
     // 即使会话缓存里塞了错误的 "proxy"，也必须强制纠正
     const origSS = global.sessionStorage;
     global.sessionStorage = {
-      getItem: () => JSON.stringify({ base: "http://172.16.30.128:8089", kind: "proxy" }),
+      getItem: () => JSON.stringify({ base: "http://192.168.193.70:8089", kind: "proxy" }),
       setItem() {}, removeItem() {},
     };
     const kind2 = inst.api.currentKind();
@@ -227,7 +227,7 @@ if (typeof exp !== "function") {
     console.log("  previewUrl 请求地址 =", seenUrl);
     console.log("  previewUrl 返回 url =", pv && pv.url);
     if (!/^http:\/\/172\.16\.30\.128:8089\//.test(String(pv && pv.url))) {
-      console.log("❌ previewUrl 应拼直连基址 172.16.30.128:8089");
+      console.log("❌ previewUrl 应拼直连基址 192.168.193.70:8089");
       process.exit(1);
     }
     if (/127\.0\.0\.1:6810/.test(String(seenUrl) + String(pv && pv.url))) {
@@ -268,7 +268,7 @@ if (typeof exp !== "function") {
         process.exit(1);
       }
       if (!/^http:\/\/172\.16\.30\.128:8089\//.test(out)) {
-        console.log("❌ 应改写为直连基址 172.16.30.128:8089");
+        console.log("❌ 应改写为直连基址 192.168.193.70:8089");
         process.exit(1);
       }
       // 签名参数必须原样保留（否则直链失效）
@@ -281,7 +281,7 @@ if (typeof exp !== "function") {
     }
 
     // 已经是「正常公网/局域网主机」的 URL 不得被改写
-    const keep = "http://172.16.30.128:8089/api/raw/a.pdf?sig=zz";
+    const keep = "http://192.168.193.70:8089/api/raw/a.pdf?sig=zz";
     const keepOut = inst.api.browserReachableUrl(keep);
     console.log("  正常主机保持原样");
     console.log(`    in  = ${keep}`);
@@ -355,7 +355,7 @@ if (typeof exp !== "function") {
       process.exit(1);
     }
     if (!/^http:\/\/172\.16\.30\.128:8089\//.test(syncDl)) {
-      console.log("❌ 直连通道 downloadUrl 应指向 172.16.30.128:8089");
+      console.log("❌ 直连通道 downloadUrl 应指向 192.168.193.70:8089");
       process.exit(1);
     }
 
@@ -467,20 +467,20 @@ if (typeof exp !== "function") {
 
     const dlCases = [
       // [说明, base, mount, 文件路径, 期望的 path 参数（解码后）]
-      ["根目录下的文件 → 落在 /", "http://172.16.30.128:8089", "研发立项",
+      ["根目录下的文件 → 落在 /", "http://192.168.193.70:8089", "研发立项",
         "/除尘工程技术手册.pdf", "/"],
-      ["一层目录下的文件", "http://172.16.30.128:8089", "研发立项",
+      ["一层目录下的文件", "http://192.168.193.70:8089", "研发立项",
         "/02 单机图纸/a.dwg", "/02 单机图纸"],
-      ["深层目录", "http://172.16.30.128:8089", "售前项目",
+      ["深层目录", "http://192.168.193.70:8089", "售前项目",
         "/关于印发《非标设备技术档案资料管理要求》的通知.doc", "/"],
-      ["多层路径", "http://172.16.30.128:8089", "项目设计",
+      ["多层路径", "http://192.168.193.70:8089", "项目设计",
         "/2026/09/方案/v2/final.docx", "/2026/09/方案/v2"],
-      ["末尾多余斜杠的 base", "http://172.16.30.128:8089///", "研发立项",
+      ["末尾多余斜杠的 base", "http://192.168.193.70:8089///", "研发立项",
         "/a/b/c.xlsx", "/a/b"],
-      ["反斜杠路径（容错）", "http://172.16.30.128:8089", "研发立项",
+      ["反斜杠路径（容错）", "http://192.168.193.70:8089", "研发立项",
         "\\a\\b\\c.xlsx", "/a/b"],
-      ["空文件路径 → 根", "http://172.16.30.128:8089", "研发立项", "", "/"],
-      ["无 mount → 仅根地址", "http://172.16.30.128:8089", "",
+      ["空文件路径 → 根", "http://192.168.193.70:8089", "研发立项", "", "/"],
+      ["无 mount → 仅根地址", "http://192.168.193.70:8089", "",
         "/a/b.pdf", null],
     ];
 
@@ -507,7 +507,7 @@ if (typeof exp !== "function") {
     }
 
     // 关键护栏：绝不能再出现回环地址（那是任务②的原始 bug）
-    const probe = wd("http://172.16.30.128:8089", "研发立项", "/02 单机图纸/a.dwg");
+    const probe = wd("http://192.168.193.70:8089", "研发立项", "/02 单机图纸/a.dwg");
     console.log("");
     if (/127\.0\.0\.1|localhost/.test(probe)) {
       console.log("❌ 深链地址里出现了回环地址（任务②的原始 bug 复现）");

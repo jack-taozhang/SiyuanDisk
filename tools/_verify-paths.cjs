@@ -4,7 +4,7 @@
  *      绝对（相对挂载根）路径，而不是 undefined。
  */
 const http = require("http");
-const BASE = "http://172.16.30.128:8089";
+const BASE = "http://192.168.193.70:8089";
 const MOUNT = process.env.NB_MOUNT || "";
 
 function req(method, path, { token, body, form } = {}) {

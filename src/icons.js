@@ -29,24 +29,11 @@ export const CUSTOM_ICONS = `
   <path fill="currentColor" d="M13.1 16.3a1.2 1.2 0 0 1 1.7 0l.4.4V11a1.2 1.2 0 0 1 2.4 0v5.7l.4-.4a1.2 1.2 0 0 1 1.7 1.7l-2.6 2.6a1.2 1.2 0 0 1-1.7 0L13.1 18a1.2 1.2 0 0 1 0-1.7Z"/>
   <path fill="currentColor" d="M11 23.2a1.2 1.2 0 0 1 1.2-1.2h7.6a1.2 1.2 0 0 1 0 2.4h-7.6A1.2 1.2 0 0 1 11 23.2Z"/>
 </symbol>
-<!-- ★ 任务㉑：网格/列表视图切换图标 ★
-     自绘而不是用思源内置的 iconGrid —— 内置图标名在不同思源版本里
-     不一定存在（addIcons 里没有的 id，<use> 会渲染成空白，
-     按钮就变成"点不动的空气"）。自己的 symbol 永远是稳的。 -->
-<symbol id="iconNbGrid" viewBox="0 0 32 32">
-  <rect x="5" y="4" width="9.4" height="9.4" rx="1.6" fill="currentColor"/>
-  <rect x="17.6" y="4" width="9.4" height="9.4" rx="1.6" fill="currentColor"/>
-  <rect x="5" y="16.6" width="9.4" height="9.4" rx="1.6" fill="currentColor"/>
-  <rect x="17.6" y="16.6" width="9.4" height="9.4" rx="1.6" fill="currentColor"/>
-</symbol>
-<symbol id="iconNbList" viewBox="0 0 32 32">
-  <rect x="5" y="5" width="4.4" height="4.4" rx="1.1" fill="currentColor"/>
-  <rect x="12.2" y="6" width="14.8" height="2.6" rx="1.3" fill="currentColor"/>
-  <rect x="5" y="13.8" width="4.4" height="4.4" rx="1.1" fill="currentColor"/>
-  <rect x="12.2" y="14.8" width="14.8" height="2.6" rx="1.3" fill="currentColor"/>
-  <rect x="5" y="22.6" width="4.4" height="4.4" rx="1.1" fill="currentColor"/>
-  <rect x="12.2" y="23.6" width="14.8" height="2.6" rx="1.3" fill="currentColor"/>
-</symbol>
+<!-- ★ 2026-09-28：iconNbGrid / iconNbList 两个网格/列表切换图标已删除 ★
+     网格视图整体移除（用户要求），这两个 symbol 已无任何 <use> 引用。
+     ⚠️ 删自定义 symbol 是安全的：思源对未注册的 id 只会渲染成空白，
+        不存在"注册了却不用"的副作用。反过来如果留着它们，
+        每次 addIcons 都要多解析两个 SVG，属于无谓开销。 -->
 `;
 
 /* ==========================================================================

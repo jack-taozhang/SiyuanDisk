@@ -386,7 +386,7 @@ const siyuanSDK = {
     inst.api.signedDownloadUrl = async (mount, path, inline) => {
       signedCalls.push({ mount, path });
       lastInline = inline;
-      return "http://172.16.30.128:8089/api/raw/x.png?mount=" + encodeURIComponent(mount || "") +
+      return "http://192.168.193.70:8089/api/raw/x.png?mount=" + encodeURIComponent(mount || "") +
         "&path=" + encodeURIComponent(path || "") + "&exp=1&sig=deadbeef&inline=" + (inline ? "true" : "false");
     };
 
@@ -403,7 +403,7 @@ const siyuanSDK = {
       inst.api.signedDownloadUrl = async (mount, path, inline) => {
         signedCalls.push({ mount, path });
         lastInline = inline;
-        return "http://172.16.30.128:8089/api/raw/x.png?mount=" + encodeURIComponent(mount || "") +
+        return "http://192.168.193.70:8089/api/raw/x.png?mount=" + encodeURIComponent(mount || "") +
           "&path=" + encodeURIComponent(path || "") + "&exp=1&sig=deadbeef&inline=" + (inline ? "true" : "false");
       };
       previewCalls = 0;
@@ -913,27 +913,199 @@ const siyuanSDK = {
      /文件夹没有直链/.test(treeSrc),
      "K6c：目录明确拒绝出直链（避免复制出一个 404 链接）");
 
-  // ---- K7：菜单必须真的 open()，且参数形态符合思源 Menu.open 的真实契约 ----
+  // ---- K7：菜单显示入口必须走 openMenuAt 封装，内部 **open() 优先** ----
   //
-  //  ★ 实测 + 反编译思源 bundle 得到的结论（别再退化回去）：
-  //     思源自己每一处调用都是 { x, y, h, isLeft }
-  //       · open({ x, y })              → 不抛但菜单不出现（静默失败）
-  //       · open({ clientX, clientY })  → TypeError: … reading 'clientHeight'
-  //     `h` 是锚点元素**高度**，思源用它算向上/向下翻转；
-  //     缺 h 就会退回一条在无侧边栏上下文里会断的兜底链。
-  //     ⇒ 统一走 menuAnchor(ev)，它一定给 { x, y, h }。
-  ok(/menu\.open\s*\(\s*menuAnchor\s*\(\s*ev\s*\)\s*\)/.test(treeCode),
-     "K7a：两份菜单都用 menuAnchor(ev) 打开（带 {x,y,h}）");
+  //  ★★★【2026-09-28 二次定案 —— 本条曾写错，现改正，勿再改回】★★★
+  //
+  //  思源有**两个都叫 Menu 的类**，早前把它们的性质搞混，得出了错误结论：
+  //
+  //    类 A（内部菜单，window.siyuan.menus.menu 的类，bundle 里叫 te）
+  //      24 个方法，**有 popup，没有 open，也没有 addSeparator**。
+  //    类 B（插件 API 包装类，main.<hash>.js 模块 6959 导出 W）★ 我们用的就是它 ★
+  //      只有 6 个公开方法：addItem / addSeparator / showSubMenu /
+  //      **open** / fullscreen / close
+  //      `open(c){ this.isOpen || this.menu.popup(c) }`  ← 内部才去调 A 的 popup
+  //      ⇒ **B 有 open，反而没有 popup**
+  //
+  //  怎么确定我们用的是 B（实测，不是推理）——**调用栈**：
+  //      at proto.popup (<anonymous>)                    ← A 的 popup
+  //      at $.open (main.<hash>.js:4239:16357)           ← B 的 open
+  //      at openMenuAt (plugin:siyuan-nebuladisk:5813)   ← 我们的封装
+  //    `openMenuAt` 的下一帧直接是 B 的 open，中间**没有**我们调 popup 的帧。
+  //  另一条独立证据：`menu.addSeparator()` 有效（菜单里真的出现
+  //  `.b3-menu__separator`），而 addSeparator 只存在于 B。
+  //
+  //  ⇒ 结论：**旧代码 `menu.open(menuAnchor(ev))` 本来就是合法调用**；
+  //    用户最初的「点了什么都不显示」唯一根因是 **按钮缺 `data-menu="true"`**
+  //    （见 K7g 组）。早前那条「Menu 没有 open ⇒ 抛 TypeError」是**误判**，
+  //    也是 A 的性质被拿去解释 B 的调用。
+  //    ⇒ 所以这里断言 `open` **优先**、`popup` 兜底。
+  //
+  //  两个分支都保留**是防御**（插件 API 是外部契约，思源改版可能换名），
+  //  不是"修 bug"；两个都没有时必须 console.error + toast，不许静默。
+  ok(/function\s+openMenuAt\s*\(\s*menu\s*,\s*ev\s*\)/.test(treeCode),
+     "K7a：存在 openMenuAt(menu, ev) 封装（菜单显示的唯一入口）");
+  ok(/menuAnchor\s*\(\s*ev\s*\)/.test(treeCode),
+     "K7a2：封装内部仍走 menuAnchor(ev) 取坐标（带 {x,y,h}）");
+  ok(/typeof\s+menu\.open\s*===\s*"function"[\s\S]{0,80}?menu\.open\s*\(/.test(treeCode),
+     "K7a3：★ open 优先判断且真的调用 open()（插件 API 的公开入口就是 open）");
+  // ★ 顺序也要钉住：「open 优先」不是随便写的，是靠调用栈定下来的 ★
+  {
+    const m = treeCode.match(/function\s+openMenuAt\s*\([\s\S]{0,900}?\n\}/);
+    const body = m ? m[0] : "";
+    const iOpen = body.indexOf("menu.open");
+    const iPopup = body.indexOf("menu.popup");
+    ok(iOpen >= 0 && iPopup >= 0 && iOpen < iPopup,
+       "K7a3b：★ 在 openMenuAt 体内 open 的判断出现在 popup **之前**（顺序被钉住）");
+  }
+  ok(/typeof\s+menu\.popup\s*===\s*"function"[\s\S]{0,80}?menu\.popup\s*\(/.test(treeCode),
+     "K7a3c：popup 兜底分支保留（防御版本改名，不是修 bug）");
+  ok(/既没有\s*open\(\)\s*也没有\s*popup\(\)/.test(treeCode),
+     "K7a3d：两个都没有时会明确报错（不许静默 return）");
+  // 反向：不许再出现「Menu 没有 open」这种已被证伪的叙述（剥注释后按代码判，
+  //   所以这条查的是代码里没有把 open 从判断里删掉）
+  ok(!/typeof\s+menu\.popup\s*===\s*"function"[\s\S]{0,120}?return;[\s\S]{0,80}?typeof\s+menu\.open/.test(treeCode),
+     "K7a3e：反向 —— popup 不许再被排到 open 前面（那会退回错误认知）");
+  const callCount = (treeCode.match(/openMenuAt\s*\(\s*menu\s*,\s*ev\s*\)/g) || []).length;
+  ok(callCount >= 3,
+     `K7a4：两份菜单都走 openMenuAt（定义 1 处 + 调用 2 处），实际 ${callCount} 处`);
   ok(!/menu\.open\s*\(\s*\{\s*x:\s*ev\.clientX/.test(treeCode),
      "K7b：不再有裸的 open({x: ev.clientX, y: ev.clientY})（缺 h，会打穿定位）");
   ok(/function\s+menuAnchor\s*\(/.test(treeCode),
      "K7c：menuAnchor 辅助函数存在");
   ok(/\bh:\s*Math\.round\(rect\.height\)/.test(treeCode),
      "K7d：menuAnchor 返回 h（思源用 h 判断向上/向下展开）");
+  // ★ getBoundingClientRect 会抛异常（元素脱离 DOM 时），必须包 try ★
+  //   2026-09-28：行为级测试 _sim-menu-open-behavior.cjs 用例5 抓到
+  //   「锚点元素已脱离 DOM ⇒ 异常上抛 ⇒ 菜单又打不开」，
+  //   与原来的 menu.open bug 是同类现象。这条钉住修复。
+  ok(/try\s*\{[\s\S]{0,200}?getBoundingClientRect\s*\(/.test(treeCode),
+     "K7d2：★ menuAnchor 对 getBoundingClientRect 包了 try（脱离 DOM 时不致菜单打不开）");
   ok(!/open\s*\(\s*\{[^}]*clientHeight/.test(treeCode),
      "K7e：没有把 clientHeight 当 open 的参数（那是思源内部字段，不是入参）");
-  const openCount = (treeCode.match(/menu\.open\s*\(/g) || []).length;
-  ok(openCount >= 2, `K7f：两份菜单都调用了 open()，实际 ${openCount} 处`);
+  // 剥掉行注释与块注释后再数裸调用点 —— 否则注释里的说明文字会误报（踩过）。
+  const treeCodeNoComment = treeCode
+    .replace(/\/\*[\s\S]*?\*\//g, "")
+    .replace(/(^|[^:])\/\/.*$/gm, "$1");
+  const bareOpen = (treeCodeNoComment.match(/menu\.open\s*\(/g) || []).length;
+  ok(bareOpen <= 1,
+     `K7f：★ 裸的 menu.open( 只允许出现在 openMenuAt 封装内（1 处），实际 ${bareOpen} 处`);
+
+  // ---- K7g：「更多」按钮必须带 data-menu="true" ----
+  //
+  //  ★★★【2026-09-28 实测定案 —— 「点更多什么都不显示」的第②层根因】★★★
+  //   只修 `menu.open → popup` 是**不够的**。修完第一层之后浏览器实测仍是
+  //   「点了什么都不显示」，用 MutationObserver 抓到的时序是（全部在同一 tick）：
+  //     +21ms  added b3-menu__item ×6 + b3-menu__separator ×2   ← 菜单项装好了
+  //     +21ms  childList-in b3-menu__items {added:0, removed:8}  ← 立刻被清空
+  //     +21ms  attr:class b3-menu fn__none                       ← 并且被隐藏
+  //
+  //   原因（bundle 原文，common.js 模块 6987）：思源的**全局点击关闭菜单**处理器
+  //     const a = y => {
+  //       !window.siyuan.menus.menu.element.contains(y)
+  //       && !(0,B.Th)(y, "data-menu", "true")     // ← 关键判定
+  //       && ( … || window.siyuan.menus.menu.remove() )
+  //     }
+  //   菜单是**复用单例**（实测 `window.siyuan.menus.menu.element` 就是 DOM 里
+  //   那个 `b3-menu fn__none`）。点按钮时 onclick 先跑 ⇒ popup() 装项+显示；
+  //   **同一个 click 事件继续冒泡到 document** ⇒ a() 认定「目标不在菜单内、
+  //   且没有 data-menu=true」⇒ 立刻 remove()，而 remove() → removeImmediately()
+  //   做的正是 `lastElementChild.innerHTML=""` + `classList.add("fn__none")`
+  //   —— 与上面的观测逐条吻合。
+  //
+  //   思源自身同类按钮就是这么标的（bundle 原文）：
+  //     <span data-type="more" data-menu="true" class="block__icon ariaLabel"
+  //           aria-label="更多"><svg><use xlink:href="#iconMore"></use></svg>
+  //
+  //   ⇒ 凡 handler 里会弹菜单的按钮，一律 data-menu="true"。这两条钉住它。
+  ok(/setAttribute\(\s*["']data-menu["']\s*,\s*["']true["']\s*\)/.test(treeCode),
+     'K7g：★ mkBtn 里会对弹菜单的按钮 setAttribute("data-menu","true")');
+  ok(/mkBtn\(\s*["']iconMore["']\s*,[\s\S]{0,80}?,\s*true\s*\)/.test(treeCode),
+     "K7g2：★「更多」按钮的 mkBtn 调用传了 opensMenu=true（否则菜单会被思源秒关）");
+  // 反向：不许把 data-menu 从 mkBtn 里抹掉，也不许把 true 改成 false
+  ok(!/mkBtn\(\s*["']iconMore["'][\s\S]{0,80}?,\s*false\s*\)/.test(treeCode),
+     "K7g3：反向 —— 「更多」按钮不许被改成 opensMenu=false");
+
+  // ---- K7h：菜单打开期间必须压住按钮自己的 tooltip ----
+  //
+  //  【2026-09-28 实测定案】用户反馈「弹出后 一直显示『更多』这俩字」。
+  //   思源 base.css 原文：
+  //     .b3-tooltips::after{ z-index:1000000; content:attr(aria-label) }
+  //     .b3-tooltips:hover::after,
+  //     .b3-tooltips:focus-within::after{ opacity:1 }
+  //     .b3-tooltips__s::after{ top:100%; margin-top:5px }   ← 按钮正下方=菜单位置
+  //   点击按钮时浏览器先把焦点给它，**焦点不丢 ⇒ :focus-within 恒真**
+  //   ⇒ tooltip 一直显示，且 z-index 比菜单还高，盖在菜单上。
+  //   实测（tools/_probe-tooltip-repro.cjs）：初始 ::after opacity=0；
+  //   点击后 :focus-within=true、::after opacity=1。
+  //   修法：弹菜单时给按钮加 .is-menu-open，CSS 里把它 display:none。
+  //
+  //  ★ 反向断言（不许丢掉抑制）必须先剥注释 —— CSS 的那段说明注释里
+  //    原样写着 `.nb-tree-btn.is-menu-open::after{ display:none !important }`，
+  //    不剥注释就会**假绿**（这与 L8' / L11 踩过的是同一类错误）。
+  const cssSrc = fs.readFileSync(path.join(PLUGIN, "index.css"), "utf8");
+  const cssNC = cssSrc
+    .replace(/\/\*[\s\S]*?\*\//g, "")      // CSS 块注释
+    .replace(/^[ \t]*\/\/.*$/gm, "");      // 防御性：万一有人写了 // 注释
+  ok(/function\s+suppressTooltipWhileMenuOpen\s*\(/.test(treeCode),
+     "K7h：存在 suppressTooltipWhileMenuOpen() 抑制函数");
+  ok(/if\s*\(\s*opensMenu\s*\)\s*suppressTooltipWhileMenuOpen\s*\(\s*b\s*\)/.test(treeCode),
+     "K7h2：★ mkBtn 里弹菜单后会调用它（把自身 tooltip 压住）");
+  ok(/\.nb-tree-btn\.is-menu-open\s*::after\s*\{[^}]*display\s*:\s*none/.test(cssNC),
+     "K7h3：★ CSS 里有 .nb-tree-btn.is-menu-open::after{ display:none }（剥注释后仍在）");
+  ok(/\.nb-tree-btn\.is-menu-open\s*::after\s*\{[^}]*!important/.test(cssNC),
+     "K7h4：★ 该规则带 !important（与思源 :focus-within 同特异性，顺序不保证）");
+
+  // ---- K7i：2026-09-28 三项「更多」菜单调整 ----
+  //
+  //  ① 删除「刷新并重置展开状态」菜单项**及其功能**（refresh() 的 deep 能力）
+  //  ② 「在浏览器中打开网盘」→「打开网盘」
+  //  ③ 「退出登录」补图标：iconLogout → iconQuit
+  //
+  //  ★ 反向断言必须先剥注释 ★
+  //    上面这段说明注释里**原样写着**「刷新并重置展开状态」「在浏览器中打开网盘」
+  //    「refresh(true)」「iconLogout」这些串 —— 不剥注释就会假绿/假红
+  //    （与 L8' / K7h 踩过的是同一类错误）。
+  //    treeCode（785 行）已剥块注释与**行首**行注释，但仍会漏掉**行尾**的 `// 注释`，
+  //    所以这里再按「任意位置 // 到行尾」清一遍。
+  const treeStrict = treeSrc
+    .replace(/\/\*[\s\S]*?\*\//g, " ")
+    .replace(/\/\/[^\n]*/g, " ");
+
+  //  ★★ 必须连**根文件 index.js** 一起查 ★★
+  //    踩过（2026-09-28）：只 grep 了 `src/` 和 `tools/` 就下结论
+  //    「全仓没有别处调用 refresh(true)」，结果 index.js 里还藏着 3 处：
+  //      · addCommand("refreshNebulaDisk") 的 callback
+  //      · 设置面板「立即登录」成功后
+  //      · 保存设置后
+  //    删掉 refresh() 的 deep 形参后，这些 true 会变成**被静默忽略的死参数**
+  //    —— 看着还在重置，其实什么也没做。所以断言的范围必须覆盖 index.js。
+  const indexStrict = fs.readFileSync(path.join(PLUGIN, "index.js"), "utf8")
+    .replace(/\/\*[\s\S]*?\*\//g, " ")
+    .replace(/\/\/[^\n]*/g, " ");
+  const allStrict = treeStrict + "\n" + indexStrict;
+
+  ok(!/刷新并重置展开状态/.test(allStrict),
+     "K7i1：★ 菜单里已无「刷新并重置展开状态」（反向断言，防被加回）");
+  ok(!/refresh\s*\(\s*true\s*\)/.test(allStrict),
+     "K7i2：★ tree.js + index.js 均无 refresh(true) ——「重置展开」能力已整体移除");
+  ok(!/async\s+refresh\s*\(\s*\w/.test(treeStrict) && /async\s+refresh\s*\(\s*\)/.test(treeStrict),
+     "K7i3：★ refresh() 不再带 deep 形参");
+  ok(/mkBtn\(\s*["']iconRefresh["'][\s\S]{0,80}?this\.refresh\s*\(\s*\)/.test(treeCode),
+     "K7i4：★ 工具条「刷新」调 this.refresh()（保留展开状态，与 README 承诺一致）");
+  ok(/label:\s*["']打开网盘["']/.test(treeCode),
+     "K7i5：★ 菜单项名为「打开网盘」");
+  ok(!/在浏览器中打开网盘/.test(allStrict),
+     "K7i6：★ 旧名「在浏览器中打开网盘」在 tree.js + index.js 里已完全消失");
+  ok(/icon:\s*["']iconQuit["']/.test(treeCode),
+     "K7i7：★ 「退出登录」用 iconQuit");
+  ok(!/iconLogout/.test(allStrict),
+     "K7i8：★ tree.js + index.js 均无 iconLogout（该 symbol 思源里不存在 ⇒ 画成空白）");
+  //  ★ 用户可见文案若按名字引用菜单项，必须跟着改名 ★
+  //    踩过：改名后 showToast 里还写着「请用『在浏览器中打开网盘』」——
+  //    会把用户指向一个菜单上根本找不到的名字。K7i6 正是把它抓出来的。
+  ok(!/请用「在浏览器中打开网盘」/.test(treeStrict),
+     "K7i9：★ toast 文案里引用的菜单名已同步改名（不留旧名指引）");
 
   // ---- K8：右键事件必须绑在行上，且不能是 oncontextmenu 被后续覆盖 ----
   ok(/oncontextmenu\s*=/.test(treeSrc) || /addEventListener\s*\(\s*"contextmenu"/.test(treeSrc),
@@ -989,11 +1161,12 @@ const siyuanSDK = {
 
   // ---- L2：任务⑰ 侧边栏那处也一样（两个调用点，别只修一个）----
   //
-  //  tree.js 的 showMoreMenu 里也有一个「在浏览器中打开网盘」，
+  //  tree.js 的 showMoreMenu 里也有一个「打开网盘」项
+  //  （2026-09-28 前叫「在浏览器中打开网盘」），
   //  原来同样是 window.open(this.plugin.settings.serverUrl)。
   //  修一处漏一处是这类任务最常见的返工原因，所以单独钉一条。
-  ok(!/label:\s*"在浏览器中打开网盘"[\s\S]{0,160}?window\.open\(\s*this\.plugin\.settings\.serverUrl\s*,\s*"_blank"\s*\)/.test(treeSrc),
-     "L2a：tree.js 的「在浏览器中打开网盘」不再直接开 serverUrl 首页");
+  ok(!/label:\s*"[^"]*打开网盘"[\s\S]{0,160}?window\.open\(\s*this\.plugin\.settings\.serverUrl\s*,\s*"_blank"\s*\)/.test(treeSrc),
+     "L2a：tree.js 的「打开网盘」不再直接开 serverUrl 首页");
   ok(/webDiskUrl\s*\(/.test(treeSrc),
      "L2b：tree.js 改用 webDiskUrl() 拼深链（带 mount+path）");
   //  ★ 这里**不能**要求 `async`：_deepLinkTarget() 是纯计算（读 DOM 上的
@@ -1182,23 +1355,49 @@ const siyuanSDK = {
   ok(/truncated/.test(treeSrc) && /depthCapped/.test(treeSrc),
      "L7g：截断/深度上限会显式提示（不静默截断假装搜完了）");
 
-  // ---- L8：任务㉑ 网格模式 ----
+  // ---- L8：任务㉑ 网格模式 —— ★ 2026-09-28 已按用户要求整体移除 ★ ----
   //
-  //  用户原话：「增加网格显示模式，双击进去下级文件夹。」
-  ok(/async\s+toggleGrid\s*\(/.test(treeSrc),
-     "L8a：toggleGrid() 存在");
-  ok(/async\s+renderGrid\s*\(/.test(treeSrc),
-     "L8b：renderGrid() 存在");
-  ok(/makeGridCell\s*\(/.test(treeSrc),
-     "L8c：makeGridCell() 存在");
-  // 网格里双击目录 = 进入下级（与树里"展开"语义不同，这是有意的）
-  ok(/ondblclick[\s\S]{0,260}?if\s*\(\s*e\.isDir\s*\)\s*\{[\s\S]{0,120}?this\.gridPath\s*=/.test(treeSrc),
-     "L8d：网格里双击目录 = 进入该目录（gridPath 下钻）");
-  ok(/iconNbGrid/.test(iconsSrc) && /iconNbList/.test(iconsSrc),
-     "L8e：自绘了 iconNbGrid / iconNbList（不依赖思源内置图标名是否叫 iconGrid）");
-  ok(/is-grid/.test(treeSrc) && /\.nb-tree-body\.is-grid/.test(
-       fs.readFileSync(path.join(PLUGIN, "index.css"), "utf8")),
-     "L8f：网格样式通过 .is-grid 类切换，且 loadRoot 会摘掉它");
+  //   历史：用户原话「增加网格显示模式，双击进去下级文件夹。」
+  //   本次：用户原话「去掉文件夹 网格视图方式，同时去掉这个按钮。」
+  //
+  //   ⚠️ 断言方向已**反转** —— 从「网格功能存在」改为「网格功能已删干净」。
+  //     这类"反向断言"比删掉整块更有价值：它能在以后有人误把网格代码
+  //     贴回来时立刻报警，而不是安静地通过。
+  //
+  //   ★★ 反向断言**必须先剥注释**（实测踩到过，一次算错 4 条）★★
+  //     第一版直接 `!/makeGridCell/.test(treeSrc)` —— 结果 4 条假红：
+  //     tree.js 里那段说明注释写明了「gridMode / toggleBtn / makeGridCell()
+  //     已删除」，正则命中的是**注释文字**而不是代码。
+  //     这与 index.css 那条 L11 断言犯过的是同一类错误（注释假绿/假红）。
+  const stripCommentsFn = (s) =>
+    s.replace(/\/\*[\s\S]*?\*\//g, "")     // JS 块注释
+     .replace(/<!--[\s\S]*?-->/g, "")      // ★ HTML 注释 —— icons.js 的图标定义是
+                                           //   HTML 片段，说明文字写在 <!-- --> 里，
+                                           //   只剥 /* */ 会把注释当代码（实测踩到 L8e' 假红）
+     .replace(/^[ \t]*\/\/.*$/gm, "");     // JS 行注释
+  const treeCodeNC = stripCommentsFn(treeSrc);
+  const iconsCodeNC = stripCommentsFn(iconsSrc);
+  ok(!/async\s+toggleGrid\s*\(/.test(treeCodeNC),
+     "L8a'：toggleGrid() 已移除（网格切换入口）");
+  ok(!/async\s+renderGrid\s*\(/.test(treeCodeNC),
+     "L8b'：renderGrid() 已移除");
+  ok(!/makeGridCell\s*\(/.test(treeCodeNC),
+     "L8c'：makeGridCell() 已移除");
+  ok(!/this\.gridMode/.test(treeCodeNC) && !/this\.gridBtn/.test(treeCodeNC),
+     "L8d'：gridMode / gridBtn 状态已移除");
+  ok(!/iconNbGrid/.test(iconsCodeNC) && !/iconNbList/.test(iconsCodeNC),
+     "L8e'：iconNbGrid / iconNbList 图标已移除");
+  //   ★ 关键回归点：搜索结果双击目录**不依赖** gridMode ★
+  //     _jumpToDir 走的是 revealPath（树展开路线）。断言 revealPath 仍在，
+  //     保证"删网格"没有把搜索跳转一起带走。
+  ok(/async\s+revealPath\s*\(/.test(treeCodeNC) && /this\._jumpToDir\s*\(/.test(treeCodeNC),
+     "L8f'：★ 搜索双击目录的 revealPath/_jumpToDir 仍在（未随网格被误删）");
+  ok(!/is-grid/.test(treeCodeNC) && !/\.nb-grid/.test(
+       stripCommentsFn(fs.readFileSync(path.join(PLUGIN, "index.css"), "utf8"))),
+     "L8g'：网格相关样式类（is-grid / .nb-grid*）已从 tree.js 与 CSS 移除");
+  //   ★ 但 .nb-type-icon--dir 必须保留 —— 文件树与搜索结果共用它 ★
+  ok(/\.nb-type-icon--dir/.test(fs.readFileSync(path.join(PLUGIN, "index.css"), "utf8")),
+     "L8h'：★ .nb-type-icon--dir 保留（文件树/搜索结果共用，不能随网格一起删）");
 
   // ---- L11：任务25 —— 网格图标高度固定 + 文件夹/文件图标 ----
   //
@@ -1222,13 +1421,12 @@ const siyuanSDK = {
       .replace(/\/\*[\s\S]*?\*\//g, "")
       .replace(/^[ \t]*\/\/.*$/gm, "");
 
-    // --- 25a：行高必须固定 ---
-    ok(/grid-auto-rows:\s*\d+px\s*;/.test(cssCode),
-       "L11a：★ .nb-grid 设了固定 grid-auto-rows（不设就会随 flex:1 被拉伸）");
-    ok(/align-content:\s*start\s*;/.test(cssCode),
-       "L11b：★ .nb-grid align-content:start —— 杜绝 Grid 默认 stretch 拉高每行");
-    ok(/\.nb-cell\s*\{[^}]*?height:\s*\d+px\s*;/.test(cssCode),
-       "L11c：★ .nb-cell 自身也固定高度（双层保险）");
+    // --- 25a：网格行高固定 —— ★ 2026-09-28 断言删除 ★ ---
+    //   原断言（L11a/b/c）检查 `.nb-grid` 的 grid-auto-rows / align-content
+    //   与 `.nb-cell` 的固定高度。网格视图已整体移除，这三条 CSS 规则
+    //   连同 .nb-grid / .nb-cell 一起被删掉了，断言也随之删除。
+    //   （保留在此的说明是必要的：否则以后有人看到"25a 相关测试没了"
+    //     会以为是漏测，而不是随功能移除。）
 
     // --- 25b：图标必须按扩展名解析，不能把文件名当扩展名 ---
     ok(/export\s+function\s+typeIconEl\s*\(\s*\w+\s*,\s*\w+\s*\)/.test(iconsCode),
@@ -1278,12 +1476,17 @@ const siyuanSDK = {
       .replace(/^[ \t]*\/\/.*$/gm, "");
     ok(!/typeIconEl\(\s*e\.name\s*,/.test(treeCodeOnly),
        "L11h：★★ tree.js 里【不再】有 typeIconEl(e.name, …) 这种错位调用（已剥注释）");
+    // ★ 2026-09-28：调用点由 4 处降为 2 处 —— 网格视图移除带走了
+    //   makeGridCell 里的那一处（另一处是 methods 名字里的 self-reference）。
+    //   现存两处：文件树 makeNode（三元形式）+ 搜索结果 makeResultRow（精确形式）。
     const iconCalls = (treeSrc.match(/typeIconEl\(/g) || []).length;
-    ok(iconCalls >= 3, `L11i：typeIconEl 调用点 ≥3（实际 ${iconCalls}）`);
-    // 允许 (e.ext || extOf(e.name), !!e.isDir) 或 (ext) 两种正确写法
+    ok(iconCalls >= 2, `L11i'：typeIconEl 调用点 ≥2（实际 ${iconCalls}；网格移除后由 4→2）`);
+    // 搜索结果那处必须用精确的正确写法 (e.ext || extOf(e.name), !!e.isDir)。
+    // ⚠️ 文件树那处是 `entry.isDir ? "" : (entry.ext || extOf(entry.name))` 的三元形式，
+    //    语义等价但字面不同 —— 所以这里判 **≥1** 而不是 ≥2（原阈值是在网格还在时定的）。
     const goodIconCalls = (treeSrc.match(/typeIconEl\(\s*e\.ext\s*\|\|\s*extOf\(e\.name\)\s*,\s*!!e\.isDir\s*\)/g) || []).length;
-    ok(goodIconCalls >= 2,
-       `L11j：★ grid 与搜索结果两处都改成 (e.ext || extOf(e.name), !!e.isDir)（实际 ${goodIconCalls} 处）`);
+    ok(goodIconCalls >= 1,
+       `L11j'：★ 搜索结果那处已改用 (e.ext || extOf(e.name), !!e.isDir)（实际 ${goodIconCalls} 处；原 ≥2 是网格还在时的阈值）`);
   }
 
   // ---- L12：任务24a —— 插入选择器（斜杠菜单 /网）也要有搜索 ----
@@ -1337,7 +1540,7 @@ const siyuanSDK = {
   //
   //  用户原话：「多了一行」（附截图）。
   //
-  //  ★ 实测（在 172.16.30.128:6806 的**运行中**思源里量的）★
+  //  ★ 实测（在 192.168.193.70:6806 的**运行中**思源里量的）★
   //    同一篇笔记里有 3 个文件嵌入块，逐个量 .nb-embed-head 的高度：
   //      · 短路径（:/托璞勒 宣传册.pdf）        → headH = 27px  ✅ 一行
   //      · 长路径（:/2026年08月/盛元立库/01-…dwg）→ headH = 53px  ❌ 两行
@@ -1429,25 +1632,49 @@ const siyuanSDK = {
     //        displayMountPath(mount, "") 返回 `mount:/` 而**不是**空串，
     //        所以必须**先判空再调用**，不能靠 `|| ""` 兜底（那是死兜底）。
     const embedNoComments = embedCode;
-    // ★ 第四轮（用户报「售前项目 售前项目:/托璞勒 宣传册.pdf」盘符重复）★
-    //   头部是 `[盘符元素] + [路径元素]` 并排显示 ⇒ 路径元素**只能放路径**，
-    //   不能放 displayMountPath(mount, path) 的完整返回（那会再带一个盘符）。
-    //   ⇒ 断言必须钉住 `.slice(1)` 这个"剥掉盘符前缀"的动作。
-    ok(/filePathRaw\s*\?\s*displayMountPath\(\s*""\s*,\s*filePathRaw\s*\)\.slice\(1\)\s*:\s*""/.test(embedNoComments),
-       "L13h：★ 文件嵌入只渲染**路径部分**（displayMountPath(\"\",...).slice(1)），" +
-       "盘符交给 .nb-embed-mount —— 否则盘符会显示两次",
-       "未匹配到 `filePathRaw ? displayMountPath(\"\", filePathRaw).slice(1) : \"\"`");
+    // ★ 2026-09-28 清理：这一组已随第④轮改造而**过期**，改为守护新契约 ★
+    //
+    //   历史：早期契约是「两个元素并排」——
+    //     `.nb-embed-mount` 放盘符、`.nb-embed-path` 放 `displayMountPath("", p).slice(1)`。
+    //     L13h/L13h3 当时钉的就是这个 `.slice(1)` 剥离动作。
+    //
+    //   但用户第四轮明确要求**合并为一个元素**（原话：
+    //     「目前是 售前项目/FA&JG-….pdf，调整为 售前项:/FA&JG-….pdf」），
+    //   因为并排时 `.nb-embed-mount` 与 `.nb-embed-path` 之间有 5px flex gap，
+    //   拼出来是「售前项目 /FA&JG-….pdf」而不是用户要的紧贴形态。
+    //   ⇒ 现在 `.nb-embed-path` 直接放 `displayMountPath(spec.mount, p)` 的**完整返回**，
+    //     盘符由它自己带（前缀），**不再**有独立 mount 元素。
+    //
+    //   所以新契约是：
+    //     ① `.nb-embed-path` 的赋值必须是 `displayMountPath(spec.mount, filePathRaw)`
+    //        （带盘符，不 slice、不传空串）
+    //     ② 仍然禁止 `|| ""` 死兜底（displayMountPath 永不返回空串）
+    //     ③ 必须仍然先判空再调用（否则空路径渲染成 `盘:/`）
+    ok(/filePathRaw\s*\?\s*displayMountPath\(\s*spec\.mount\s*,\s*filePathRaw\s*\)\s*:\s*spec\.mount\s*\|\|\s*""/.test(embedNoComments),
+       "L13h：★ 文件嵌入的 .nb-embed-path 直接放 displayMountPath(spec.mount, …) 完整返回" +
+       "（第④轮起合并为单元素，盘符自带前缀）—— 别再退回两元素并排（会有 5px gap）",
+       "未匹配到 `filePathRaw ? displayMountPath(spec.mount, filePathRaw) : spec.mount || \"\"`");
     ok(!/displayMountPath\([^)]*\)\s*\|\|\s*""/.test(embedNoComments),
        "L13h2：★★ 没有用 `|| \"\"` 给 displayMountPath 兜底 —— 它永不返回空串，" +
        "这种兜底是死的，会悄悄把空路径渲染成 `盘:/`");
-    // ★ 关键：路径元素里不许再出现盘符 ★
-    //   判据：调用 displayMountPath 时第一个参数**必须是空串**（不传 mount），
-    //   或返回值被 .slice(1) 剥掉前缀。任选其一，否则就是重复显示盘符。
-    const filePathCall = embedNoComments.match(
-      /filePathRaw\s*\?\s*([^:]+?)\s*:\s*""/);
-    ok(!!filePathCall && /displayMountPath\(\s*""\s*,/.test(filePathCall[1]),
-       "L13h3：★★★ .nb-embed-path 的 displayMountPath 第一个参数必须是空串（不把盘符塞进路径元素）",
-       filePathCall ? "实际 = " + filePathCall[1].trim() : "未匹配到赋值");
+    // ★ 关键：文件嵌入不许再出现 `.slice(1)` 剥离（那是两元素时代的写法）★
+    //
+    //   ⚠️ 必须限定在**文件嵌入**段内判断（`filePathRaw` 附近）。
+    //     不能全文件禁 `displayMountPath("")` —— **目录嵌入是有意保留两段式**的
+    //     （见 src/embed.js 需求3 注释：目录路径随浏览变化，两段更好看出"在哪一级"），
+    //     它仍然合法地写着 `displayMountPath("", currentPath).slice(1)`。
+    //     全文件禁止 = 假红。
+    const fileEmbedSeg = (() => {
+      const i = embedNoComments.indexOf("filePathRaw");
+      return i >= 0 ? embedNoComments.slice(Math.max(0, i - 300), i + 300) : "";
+    })();
+    ok(fileEmbedSeg.length > 0 && !/displayMountPath\(\s*""\s*,/.test(fileEmbedSeg),
+       "L13h3：★★★ 文件嵌入不许再用 displayMountPath(\"\", …) —— 空串参数是两元素时代的写法，" +
+       "现在盘符必须由 path 元素自带（传 spec.mount）");
+    // 反向守卫：文件嵌入不许有独立的 .nb-embed-mount 元素（会与 path 的盘符重复显示）
+    ok(!/class="nb-embed-mount"/.test(fileEmbedSeg),
+       "L13h4：★★ 文件嵌入不许再建独立的 .nb-embed-mount 元素 —— 盘符已并入 .nb-embed-path，" +
+       "再建一个会显示两次（这是第二轮踩过的坑）");
 
     // 目录嵌入：同样只放路径（不带冒号、不带盘符）
     ok(/pathEl\.textContent\s*=\s*currentPath\s*\?\s*displayMountPath\(\s*""\s*,\s*currentPath\s*\)\.slice\(1\)\s*:\s*""/.test(embedCode),
@@ -1598,7 +1825,7 @@ const siyuanSDK = {
   //    「要支持在嵌入块上下拖动排序，拖动的时候文档视图要跟着定位到这个嵌入块」
   //
   //  ★ 这道题的全部难点不在 DOM，而在**思源内核的 moveBlock 语义**。
-  //    我在 172.16.30.128:6806 的活内核上做了探针（tools/probe-move-semantics.py），
+  //    我在 192.168.193.70:6806 的活内核上做了探针（tools/probe-move-semantics.py），
   //    结论如下（都是实测，不是读文档猜的）：
   //
   //      · {id, previousID}            ⇒ 把 id 移到 previousID **之后**
@@ -1628,13 +1855,24 @@ const siyuanSDK = {
     ok(/function\s+makeEmbedDraggable\s*\(/.test(embedCode),
        "L14a：★ src/embed.js 定义了 makeEmbedDraggable（拖动排序的实现入口）");
 
-    // ② 两个嵌入块（目录 / 文件）的头部都挂了手柄，且都真的接上了拖动
-    const gripCount = (embedCode.match(/class="nb-embed-grip"/g) || []).length;
-    ok(gripCount === 2,
-       `L14b：★ 目录嵌入 + 文件嵌入的头部各有一个 .nb-embed-grip 手柄（实际 ${gripCount} 个，应为 2）`);
-    const wireCount = (embedCode.match(/makeEmbedDraggable\(head\.querySelector\("\.nb-embed-grip"\),\s*wrap,\s*plugin\)/g) || []).length;
+    // ② 两个嵌入块（目录 / 文件）都接上了拖动 ★ 2026-09-28 清理：契约已改 ★
+    //
+    //   历史：早期用 `.nb-embed-grip` 六点手柄当拖动源，两处各一个 span。
+    //   后来**有意移除手柄**（index.css 里明确写着 `.nb-embed-grip` 样式已全部删除），
+    //   改为 `makeEmbedDraggable(null, wrap, plugin)` —— handleEl 传 null 时
+    //   函数内部退化成"用整个头部 wrapEl 当拖动源"（见 src/embed.js 该函数注释）。
+    //   ⇒ 旧断言（gripCount===2 / wireCount 按手柄选择器数）变成永远红的过期断言。
+    //
+    //   新契约：
+    //     ① 不许再有 .nb-embed-grip（DOM 与 CSS 都不许回退）
+    //     ② 两处都必须调用 makeEmbedDraggable(null, wrap, plugin)（两个嵌入块都要能拖）
+    ok(!/nb-embed-grip/.test(embedCode) && !/nb-embed-grip/.test(cssCode),
+       "L14b：★ 已移除的 .nb-embed-grip 手柄不许回退（DOM 与 CSS 里都不许再出现）—— " +
+       "现在整个头部就是拖动源，别把六点手柄加回来");
+    const wireCount = (embedCode.match(/makeEmbedDraggable\(\s*null\s*,\s*wrap\s*,\s*plugin\s*\)/g) || []).length;
     ok(wireCount === 2,
-       `L14c：★★ 两处都真的调用了 makeEmbedDraggable(手柄, wrap, plugin)（实际 ${wireCount} 处，应为 2）—— 只放 span 不接线 = 手柄是死的`);
+       `L14c：★★ 两处嵌入块都调用了 makeEmbedDraggable(null, wrap, plugin)（实际 ${wireCount} 处，应为 2）` +
+       `—— 少一处 = 那个嵌入块拖不动；手柄参数传 null 是有意设计（整头部当拖动源）`);
 
     // ③ moveBlock 语义必须按实测写：只传 previousID，且不传 parentID
     ok(/\/api\/block\/moveBlock/.test(embedCode),
@@ -1717,8 +1955,13 @@ const siyuanSDK = {
        "L14o2：★ 两条线分别贴在上沿(top:-N)/下沿(bottom:-N)，才能区分「插到前」与「插到后」");
     ok(/\.nb-embed\.is-dragging\s*\{[^}]*opacity/.test(cssCode),
        "L14p：★ CSS 有 .nb-embed.is-dragging 的降透明度（拖动中能看出「拿起来的是哪个」）");
-    ok(/\.nb-embed-grip\s*\{[^}]*cursor:\s*grab/.test(cssCode),
-       "L14q：★ .nb-embed-grip 是 cursor:grab（鼠标形态就提示「这里能拖」）");
+    // ★ 2026-09-28 清理：原为「.nb-embed-grip 是 cursor:grab」——手柄已移除，断言过期。
+    //   改为反向守卫：不许把已删的手柄样式加回来（没有元素会用，只会误导维护者）。
+    //   同时正向守住「拖动源确实有 cursor 提示」这个**语义**：
+    //   手柄没了，但头部作为拖动源也应该给出可拖的鼠标形态提示。
+    ok(!/\.nb-embed-grip\s*\{/.test(cssCode),
+       "L14q：★ 已删除的 .nb-embed-grip 样式不许加回来（DOM 里没有该元素，加了是死代码）；" +
+       "拖动提示应由头部自身的 cursor 承担");
 
     // ⑩ 拖动结束必须清掉提示线，否则线会永久留在页面上
     ok(/function\s+clearMarks\s*\(/.test(embedCode) &&

@@ -143,7 +143,7 @@ OO **不是无状态查看页** —— 它需要 `document.key` + `callbackUrl`�
 **直接丢给浏览器 = `ERR_NAME_NOT_RESOLVED`。**
 
 所以所有要交给浏览器的地址都必须过 `browserReachableUrl()` 把主机改写成外部可达地址
-（`172.16.30.128:8089` 或代理的 `127.0.0.1:6810`）。
+（`192.168.193.70:8089` 或代理的 `127.0.0.1:6810`）。
 
 ### 3.4 双通道：直连 vs 代理
 
@@ -151,7 +151,7 @@ OO **不是无状态查看页** —— 它需要 `document.key` + `callbackUrl`�
 
 | 通道 | 何时使用 | 基点 |
 |---|---|---|
-| `direct` | NAS / 浏览器访问思源 | `serverBase()` = `http://172.16.30.128:8089` |
+| `direct` | NAS / 浏览器访问思源 | `serverBase()` = `http://192.168.193.70:8089` |
 | `proxy` | 桌面端（插件自己起的代理） | `proxyBase()` = `http://127.0.0.1:6810` |
 
 > **★ 历史故障（值得反复看）★**
@@ -318,7 +318,7 @@ if len(hits) >= cap: break      # ← 在【收集阶段】就提前退出
 **从线上服务端把文件拉回来算 sha256**，与本地构建产物比对。
 
 ```
-http://172.16.30.128:6806/plugins/siyuan-nebuladisk/index.js  →  sha256 逐字节一致
+http://192.168.193.70:6806/plugins/siyuan-nebuladisk/index.js  →  sha256 逐字节一致
 ```
 这才是"部署生效"的证明。
 
@@ -334,7 +334,7 @@ http://172.16.30.128:6806/plugins/siyuan-nebuladisk/index.js  →  sha256 逐字
 
 > 这些坑与业务无关，但每次踩都要花时间。记在这里，下次直接绕过。
 
-### 6.1 SSH 到 NAS（`172.16.30.128`）
+### 6.1 SSH 到 NAS（`192.168.193.70`）
 
 - **没有 `sshpass`**，`paramiko` 也是坏的 ⇒ 用 **`SSH_ASKPASS` + `SSH_ASKPASS_REQUIRE=force`**
 - ★ `SSH_ASKPASS` 的值必须是 **Windows 原生路径**（`.bat`）；

@@ -1,5 +1,5 @@
 /**
- * 通过 SSH 在 NAS(172.16.30.128) 上执行命令。
+ * 通过 SSH 在 NAS(192.168.193.70) 上执行命令。
  *
  * 本机没有 sshpass；Bash 工具的 PATH 在 WorkBuddy 里是坏的
  * （cat/chmod/dirname 全部 command not found），所以不能靠 shell 写 askpass。
@@ -13,7 +13,7 @@ const path = require("path");
 const os = require("os");
 const { spawnSync } = require("child_process");
 
-const HOST = "172.16.30.128";
+const HOST = "192.168.193.70";
 const USER = "tao_zhang";
 const { PASS } = require("./_secrets.cjs");
 

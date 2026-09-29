@@ -176,9 +176,13 @@ setTimeout(async () => {
   walk(panel, 0);
 
   console.log("\n===== 关键元素存在性 =====");
-  for (const sel of [".nb-tree-toolbar", ".nb-tree-filter", ".nb-tree-filter input", ".nb-tree-results", ".nb-tree-banner", ".nb-tree-body", ".nb-results-head", ".nb-grid-nav", ".nb-tree-path"]) {
+  // ★ 2026-09-28：移除了 ".nb-grid-nav" —— 网格视图已整体删除，该元素不会再有。
+  //   同时补上 .nb-tree-mount / .nb-tree-btn 两个仍在用的关键选择器，
+  //   便于日后排查"工具条上的按钮怎么没了"这类问题。
+  for (const sel of [".nb-tree-toolbar", ".nb-tree-mount", ".nb-tree-btn", ".nb-tree-filter", ".nb-tree-filter input", ".nb-tree-results", ".nb-tree-banner", ".nb-tree-body", ".nb-results-head", ".nb-tree-path"]) {
     const e = panel.querySelector(sel);
-    console.log(`${sel}: ${e ? "存在" : "不存在"}` + (e ? ` (inline.display="${e.style.display}")` : ""));
+    const n = panel.querySelectorAll(sel).length;
+    console.log(`${sel}: ${e ? `存在 ×${n}` : "不存在"}` + (e ? ` (inline.display="${e.style.display}")` : ""));
   }
   process.exit(0);
 }, 300);

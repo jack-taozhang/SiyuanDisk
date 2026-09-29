@@ -252,7 +252,7 @@ const api = http.createServer((req, res) => {
  *     这样测到的就是 NAS 上那条真实链路。
  * ---------------------------------------------------------------------- */
 function installBOM(apiPort) {
-  /** 思源页面的 origin（NAS 上是 http://172.16.30.128:6806） */
+  /** 思源页面的 origin（NAS 上是 http://192.168.193.70:6806） */
   const ORIGIN = "http://127.0.0.1:6806";
   /** 模拟网盘 —— 就是直连通道的目标 */
   const SERVER = `http://127.0.0.1:${apiPort}`;

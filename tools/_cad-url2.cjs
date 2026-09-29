@@ -8,7 +8,7 @@
 const fs = require("fs");
 const { PASS } = require("./_secrets.cjs");
 
-const B = "http://172.16.30.128:8089";
+const B = "http://192.168.193.70:8089";
 const MOUNT = process.argv[2] || "售前项目";
 const PATH = process.argv[3] || "/2025年08月/250501+中国铁建项目/CL2-图块.dwg";
 

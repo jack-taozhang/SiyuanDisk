@@ -13,7 +13,7 @@ const crypto = require("crypto");
 const fs = require("fs");
 const { spawnSync } = require("child_process");
 
-const BASE = "http://172.16.30.128:8089";
+const BASE = "http://192.168.193.70:8089";
 
 function get(path) {
   return new Promise((res, rej) => {

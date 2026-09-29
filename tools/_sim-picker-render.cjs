@@ -262,11 +262,12 @@ function report() {
 setTimeout(async () => {
   const doc = window.document;
 
-  // ================= 任务25a：网格不再占满整高 =================
-  ok(/\.nb-grid\b[^{]*\{[^}]*grid-auto-rows\s*:/.test(cssNC), "任务25a .nb-grid 声明了 grid-auto-rows");
-  ok(/grid-auto-rows\s*:\s*\d+px/.test(cssNC), "任务25a 行高是固定 px（不是 auto）");
-  ok(/\.nb-grid\b[^{]*\{[^}]*align-content\s*:\s*start/.test(cssNC), "任务25a .nb-grid align-content:start（杜绝 Grid stretch）");
-  ok(!/\.nb-cell\b[^{]*\{[^}]*min-height\s*:\s*100%/.test(cssNC), "任务25a .nb-cell 不是 min-height:100%");
+  // ============ 任务25a：网格不再占满整高 —— ★ 断言已作废 ★ ============
+  //   2026-09-28：网格视图整体移除，.nb-grid / .nb-cell 的 CSS 规则
+  //   连同这些断言一起删除。**反向断言**改为「网格样式确实不存在了」，
+  //   这样以后有人把网格 CSS 贴回来时能立刻报警（而不是安静通过）。
+  ok(!/\.nb-grid\b/.test(cssNC), "任务25a'：.nb-grid 样式已移除（网格视图已删）");
+  ok(!/\.nb-cell\b/.test(cssNC), "任务25a'：.nb-cell 样式已移除");
 
   // ================= 任务25b：文件夹/文件图标 =================
   ok(/\.nb-type-icon--dir\b/.test(cssNC), "任务25b CSS 有 .nb-type-icon--dir");

@@ -4,8 +4,11 @@
  *   任务30 的 bug 恰恰是「源码里有一段 DnD 接线，但它只在 makeNode 里」。
  *   纯 grep 一个 `draggable = true` 会**绿色通过**，却完全测不出
  *   「搜索结果拖不动」。所以本测试用一个真实的（够用的）DOM 桩，
- *   把 tree.js 求值出来，**真的调用** makeResultRow() / makeGridCell() / makeNode()，
+ *   把 tree.js 求值出来，**真的调用** makeResultRow() / makeNode()，
  *   然后检查返回的元素上与拖拽相关的**运行时属性**。
+ *
+ *   ★ 2026-09-28：makeGridCell() 已随网格视图移除（用户要求），
+ *     对应的测试 5 改为「断言它确实不存在」，避免网格代码被误贴回来。
  *
  * ★ 反向测试（见 test/reverse-drag.cjs）★
  *   把 attachEmbedDrag 的三处调用删掉一处 → 本测试必须变红。
@@ -273,8 +276,8 @@ function mkTree() {
   ft.treeEl = dom.createElement("div");
   ft._dragging = null;
   ft.destroyed = false;
-  ft.gridPath = "";
-  ft.gridMode = true;
+  // ★ 2026-09-28：gridPath / gridMode 两个字段已随网格视图移除，
+  //   这里不再需要预置（FileTree 上也不再有这两个属性）。
   return ft;
 }
 
@@ -319,11 +322,12 @@ check("4 ★ makeResultRow（搜索结果）可拖 —— 任务30 的原始诉�
   assert.strictEqual(typeof row.ondragstart, "function", "搜索结果行缺 ondragstart");
 });
 
-check("5 ★ makeGridCell（网格格子）可拖", () => {
-  const ft = mkTree();
-  const cell = ft.makeGridCell({ path: "x/y.pdf", name: "y.pdf", isDir: false, ext: "pdf" });
-  assert.strictEqual(cell.draggable, true, "网格格子 draggable 仍是 false");
-  assert.strictEqual(typeof cell.ondragstart, "function", "网格格子缺 ondragstart");
+// ★ 2026-09-28：原「5 ★ makeGridCell（网格格子）可拖」已删除 ★
+//   网格视图整体移除，FileTree.prototype.makeGridCell 不再存在。
+//   拖拽能力未减少：树节点（测试 6）与搜索结果行（测试 4）两条链路仍在。
+check("5' ★ makeGridCell 已随网格视图移除（不再可调用）", () => {
+  assert.strictEqual(FileTree.prototype.makeGridCell, undefined,
+    "makeGridCell 仍然存在 —— 网格视图没删干净");
 });
 
 check("6 ★ makeNode（文件树）可拖（搬家后没退化）", () => {
@@ -398,13 +402,27 @@ check("11 ★ #54 displayCrumbPath：与网盘 Web UI 同款面包屑（无冒�
   assert.ok(!A.displayCrumbPath("售前项目", "a/b").includes(":"), "面包屑不该出现冒号");
 });
 
-check("12 ★ #54 renderGrid 的面包屑真的用 displayCrumbPath（而不是只定义了函数）", () => {
-  const treeSrc = fs.readFileSync(path.join(ROOT, "src/tree.js"), "utf8");
-  assert.ok(/crumb\.textContent\s*=\s*displayCrumbPath\s*\(/.test(treeSrc),
-    "renderGrid 里没有调用 displayCrumbPath —— 光有函数不接线等于没修");
-  // 并且 tooltip 仍保留完整路径（displayMountPath），两者刻意不同
-  assert.ok(/crumb\.title\s*=\s*displayMountPath\s*\(/.test(treeSrc),
-    "面包屑的 title 应保留完整路径（displayMountPath）");
+check("12' ★ #54 displayCrumbPath 仍在 api.js 导出（网格虽删，函数是通用工具）", () => {
+  const apiSrc = fs.readFileSync(path.join(ROOT, "src/api.js"), "utf8");
+  assert.ok(/export\s+function\s+displayCrumbPath\s*\(/.test(apiSrc),
+    "api.js 里找不到 displayCrumbPath —— 它被连带删掉了，那是误伤");
+  // ★ 2026-09-28：原断言检查「renderGrid 里调用了 displayCrumbPath」。
+  //   renderGrid 已随网格视图删除，该断言作废。
+  //   displayCrumbPath 这个**函数本身保留**（它是通用的路径格式化工具，
+  //   测试 11 仍在直接验证它的行为），只是暂时没有调用点 ——
+  //   网格若日后恢复，接线一句 `crumb.textContent = displayCrumbPath(...)` 即可。
+  //
+  // ★★ 必须**剥掉注释再断言**（实测踩到过）★★
+  //   第一版直接对原文 `!/renderGrid/.test(treeSrc)`，结果假红 ——
+  //   因为 tree.js 里有一大段**说明性注释**写着「gridMode / toggleGrid() /
+  //   renderGrid() 已删除」，正则命中了注释文字。
+  //   这类断言不剥注释时既可能假红也可能假绿（别人把真代码删掉、
+  //   只留注释，断言照样通过）。所以统一先剥注释。
+  const treeSrc = fs.readFileSync(path.join(ROOT, "src/tree.js"), "utf8")
+    .replace(/\/\*[\s\S]*?\*\//g, "")   // 块注释
+    .replace(/^[ \t]*\/\/.*$/gm, "");   // 行注释
+  assert.ok(!/renderGrid/.test(treeSrc),
+    "renderGrid 仍存在于 tree.js（剥注释后仍命中）—— 网格视图没删干净");
 });
 
 console.log(`\n通过 ${pass} / 失败 ${fail}`);

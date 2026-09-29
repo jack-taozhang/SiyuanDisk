@@ -47,7 +47,7 @@
 
 ### 真实浏览器实测（NAS 线上）
 
-在 `http://172.16.30.128:8089` 登录后实测 `#btn-start`：
+在 `http://192.168.193.70:8089` 登录后实测 `#btn-start`：
 
 ```json
 {"found":true,"hasSvg":true,"viewBox":"0 0 32 32","pathCount":3,

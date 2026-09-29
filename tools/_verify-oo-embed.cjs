@@ -4,7 +4,7 @@
  */
 const { spawnSync } = require("child_process");
 const { PASS } = require("./_secrets.cjs");
-const B = "http://172.16.30.128:8089";
+const B = "http://192.168.193.70:8089";
 const M = "售前项目";
 const P = "/2025年08月/250501 中国银行立库项目/RCS标准接口文档(网关层)V2.0_20240131.docx";
 

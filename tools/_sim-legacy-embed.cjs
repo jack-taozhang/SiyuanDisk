@@ -187,7 +187,7 @@ let fetchCalls = [];
 const sandbox = {
   console, setTimeout, clearTimeout, Buffer, JSON, Math, Date, Object, Array, String, Number, Boolean, RegExp, Error, Promise, Map, Set, WeakMap, Symbol, URLSearchParams,
   document,
-  location: { hostname: "172.16.30.128", href: "http://172.16.30.128:6806/stage/build/desktop/" },
+  location: { hostname: "192.168.193.70", href: "http://192.168.193.70:6806/stage/build/desktop/" },
   navigator: { userAgent: "Mozilla/5.0" },
   window: null,
   fetch: async (url, opts) => {

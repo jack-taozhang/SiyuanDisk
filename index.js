@@ -84,10 +84,10 @@ const STORAGE_KEY = "settings";
  * ★ 为什么不写死 IP ★
  *   同一个插件会被两种完全不同的思源加载：
  *     · 桌面端（本机装，Electron）—— 页面在 127.0.0.1:6806
- *     · 服务端（NAS 上用 Docker 跑，浏览器访问）—— 页面在 172.16.30.128:6806
+ *     · 服务端（NAS 上用 Docker 跑，浏览器访问）—— 页面在 192.168.193.70:6806
  *   写死 192.168.193.70（ZeroTier 地址）时，浏览器端经常解析不到，
  *   表现就是「图标有、点了连不上」，用户完全不知道为什么。
- *   实测：NAS 上的思源容器访问 172.16.30.128:8089 是通的。
+ *   实测：NAS 上的思源容器访问 192.168.193.70:8089 是通的。
  *
  *   因此默认值跟随**当前页面所在主机**：网盘和思源本来就部署在同一台机器上，
  *   用页面 hostname 拼 8089 在两种场景下都成立。
@@ -369,7 +369,9 @@ export default class NebulaDiskPlugin extends Plugin {
       step("bindPluginApi", () => bindPluginApi(this, API));
       step("registerEmbed", () => registerEmbed(this));
 
-      diag("  → addTab/addDock/addTopBar");
+      // ★ 2026-09-28：日志里去掉 addTopBar —— 顶栏按钮已整段移除，
+      //   留着这个词会让今后看日志的人以为"顶栏还有按钮"（实测会误导）。
+      diag("  → addTab/addDock（顶栏按钮已移除）");
 
       // 4) 注册页签类型（预览 / 编辑）
       this.addTab({
@@ -425,30 +427,30 @@ export default class NebulaDiskPlugin extends Plugin {
       },
     });
 
-    // 6) 顶栏按钮
-    this.addTopBar({
-      icon: "iconNebulaDisk",
-      title: this.i18n.dockTitle || "NebulaDisk",
-      position: "right",
-      callback: () => this.openDockPanel(),
-      contextMenu: (menu) => {
-        menu.addItem({
-          icon: "iconSettings",
-          label: this.i18n.settingsTitle || "设置",
-          click: () => this.openSetting(),
-        });
-        menu.addItem({
-          icon: "iconRefresh",
-          label: this.i18n.refreshAll || "刷新",
-          click: () => this.tree && this.tree.refresh(true),
-        });
-        menu.addItem({
-          icon: "iconLink",
-          label: this.i18n.openInBrowser || "在浏览器中打开网盘",
-          click: () => window.open(this.settings.serverUrl, "_blank"),
-        });
-      },
-    });
+    // 6) 顶栏按钮 —— ★ 已按用户要求整段移除（2026-09-28）★
+    //
+    //   用户原话：「界面上有两个按钮，删除顶部那个。」
+    //
+    //   删掉的是 **思源主窗口最顶栏右侧** 那个 NebulaDisk 云朵图标
+    //   （原 addTopBar({ position: "right" })，含它的右键菜单：
+    //     设置 / 刷新 / 在浏览器中打开网盘）。
+    //
+    //   ⚠️ 为什么整段删而不是隐藏：
+    //     用户要的是"界面上不要这个按钮"。做成 display:none 会让
+    //     顶栏留下一个看不见但占位的热点，鼠标划过去还会触发 tooltip，
+    //     比直接不注册更让人困惑。
+    //
+    //   ★ 功能没有丢失（入口仍在，逐条核对过）★
+    //     · 打开面板  ⇒ 右侧停靠栏图标（addDock，见上）
+    //                    + 命令面板「打开 NebulaDisk」+ 快捷键 ⌥⌘N
+    //     · 插件设置  ⇒ 停靠栏「更多」菜单里的「插件设置」
+    //                    + 思源「设置 → 集市 → 已下载 → NebulaDisk」的齿轮
+    //     · 刷新      ⇒ 停靠栏「更多」菜单（刷新 / 刷新并重置展开状态）
+    //     · 打开网盘  ⇒ 停靠栏「更多」菜单里的「在浏览器中打开网盘」
+    //                    + 每个文件右键菜单的「浏览器打开」
+    //
+    //   ⇒ 若日后要恢复：把 addTopBar 那段原样贴回本行下方即可，
+    //     上面四条入口是**冗余**的，恢复后不会冲突。
 
     // 7) 命令
     //
@@ -465,7 +467,11 @@ export default class NebulaDiskPlugin extends Plugin {
     });
     this.addCommand({
       langKey: "refreshNebulaDisk",
-      callback: () => this.tree && this.tree.refresh(true),
+      // ★ 2026-09-28：原本是 this.tree.refresh(true) —— 那个 true 会让
+      //   「刷新」顺带清空目录树的展开状态（与 README「刷新后回到原处」相反）。
+      //   「重置展开」能力已随菜单项一起删除，refresh() 现在也不接受该参数，
+      //   留着 true 只会是**看着有效、实则被忽略**的死参数，故一并清掉。
+      callback: () => this.tree && this.tree.refresh(),
     });
 
     // 8) 斜杠菜单（笔记内嵌入口）
@@ -879,7 +885,7 @@ export default class NebulaDiskPlugin extends Plugin {
         const name = r?.display || r?.username || s.username;
         showMessage(`已登录：${name}`);
         // 登录成功后顺手把盘列表拉一次，便于立刻在侧边栏看到
-        if (this.tree) this.tree.refresh(true);
+        if (this.tree) this.tree.refresh();
       } catch (e) {
         showMessage(`登录失败：${e.message}`, 6000, "error");
       }
@@ -900,7 +906,10 @@ export default class NebulaDiskPlugin extends Plugin {
     dlg.bindInput(async () => {
       await this.saveSettings();
       dlg.destroy();
-      if (this.tree) this.tree.refresh(true);
+      // ★ 2026-09-28：原为 refresh(true)（会清空展开状态）。该能力已随
+      //   「刷新并重置展开状态」菜单项一起移除，refresh() 也不再接受该参数
+      //   —— 留着 true 是"看着有效、实则被忽略"的死参数。
+      if (this.tree) this.tree.refresh();
       return true;
     });
   }

@@ -9,10 +9,10 @@
  */
 const http = require("http");
 
-const HOST = process.env.NB_HOST || "172.16.30.128";
+const HOST = process.env.NB_HOST || "192.168.193.70";
 const PORT = parseInt(process.env.NB_PORT || "8089", 10);
 const BASE = `http://${HOST}:${PORT}`;
-const ORIGIN = process.env.NB_ORIGIN || "http://172.16.30.128:6806";
+const ORIGIN = process.env.NB_ORIGIN || "http://192.168.193.70:6806";
 const USER = process.env.NB_USER || "tao_zhang";
 const { PASS } = require("./_secrets.cjs");
 
