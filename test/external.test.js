@@ -53,7 +53,14 @@ function makeApi(overrides = {}) {
     search: async () => ({ ok: true, total: 1, hits: [] }),
     previewUrl: async () => "http://192.168.193.70:8089/lite?kind=kk&target=x",
     cadUrl: async () => "http://192.168.193.70:8089/cad/?target=x",
-    browserViewUrl: () => "http://192.168.193.70:8089/view?x",
+    /**
+     * ★ 必须是 async —— 与真实实现一致（src/api.js 的 browserViewUrl 是 async）★
+     *
+     * 原来写成同步函数，于是「external.js 漏了 await」在测试里**完全看不出来**：
+     * 同步桩下 `String(API.browserViewUrl(...))` 与 `String(await …)` 结果相同。
+     * 桩的形态必须跟真实现同构，否则测的是桩、不是代码。
+     */
+    browserViewUrl: async () => "http://192.168.193.70:8089/view?x",
     signedRawUrl: async () => "http://192.168.193.70:8089/api/raw?t=x",
     downloadUrl: () => "http://192.168.193.70:8089/api/download?x",
     mkdir: async () => ({ ok: true }),
@@ -198,19 +205,49 @@ async function main() {
     assert.strictEqual(c.viewerKind("a.png"), "download");
   });
 
-  await test("URL 方法返回字符串（由网盘侧构造，C-4）", async () => {
+  /**
+   * ★★★ 断言「内容」而不只是「类型」（2026-09-29 修）★★★
+   *
+   * 原来的写法是 `assert.strictEqual(typeof r.data, "string")`。
+   * 而 `webUrl` 当时漏了 `await`，`String(promise)` 得到的是字符串
+   * `"[object Promise]"` —— **它也是字符串**，所以这条断言一路绿灯，
+   * 直到画布独立页双击网盘卡片才暴露（浏览器去开一个叫 [object Promise] 的地址）。
+   *
+   * ⇒ 现在逐项断言**返回的就是桩里给的那个 URL**。
+   *   "类型对"与"值对"是两件事，凡是"形状相同但内容可能错"的地方都要断言内容。
+   */
+  await test("URL 方法返回**桩里给的那个地址**（由网盘侧构造，C-4）", async () => {
     const cases = [
-      ["previewUrl", () => contract.previewUrl("m", "/a.pdf")],
-      ["cadUrl", () => contract.cadUrl("m", "/a.dwg")],
-      ["webUrl", () => contract.webUrl("m", "/a.pdf", "a.pdf")],
-      ["signedRawUrl", () => contract.signedRawUrl("m", "/a.pdf")],
-      ["downloadUrl", () => contract.downloadUrl("m", "/a.pdf")],
+      ["previewUrl", () => contract.previewUrl("m", "/a.pdf"), "http://192.168.193.70:8089/lite?kind=kk&target=x"],
+      ["cadUrl", () => contract.cadUrl("m", "/a.dwg"), "http://192.168.193.70:8089/cad/?target=x"],
+      ["webUrl", () => contract.webUrl("m", "/a.pdf", "a.pdf"), "http://192.168.193.70:8089/view?x"],
+      ["signedRawUrl", () => contract.signedRawUrl("m", "/a.pdf"), "http://192.168.193.70:8089/api/raw?t=x"],
+      ["downloadUrl", () => contract.downloadUrl("m", "/a.pdf"), "http://192.168.193.70:8089/api/download?x"],
     ];
-    for (const [label, run] of cases) {
+    for (const [label, run, expected] of cases) {
       const r = await run();
       assert.strictEqual(r.ok, true, `${label} 应 ok`);
       assert.strictEqual(typeof r.data, "string", `${label} 应返回字符串`);
+      assert.strictEqual(r.data, expected, `${label} 应返回真实地址（不是 [object Promise] 之类的占位）`);
     }
+  });
+
+  /**
+   * ★ 专项回归：漏 await 时 `String(promise)` 会静默变成 "[object Promise]" ★
+   *
+   * 与上一条的区别：这里把 `API.browserViewUrl` 换成一个**真 async** 的桩
+   * （上面 makeApi 里的同名字段曾是同步函数，所以漏 await 也测不出来）。
+   * 两条一起构成"防漏 await"的护栏：值断言 + async 桩。
+   */
+  await test("webUrl 对 async 的 browserViewUrl 不会退化成 [object Promise]", async () => {
+    const c = createExternalContract({
+      API: makeApi({ browserViewUrl: async () => "http://192.168.193.70:8089/view?async=1" }),
+      pickViewer: stubPickViewer,
+    });
+    const r = await c.webUrl("m", "/a.pdf", "a.pdf");
+    assert.strictEqual(r.ok, true);
+    assert.strictEqual(r.data, "http://192.168.193.70:8089/view?async=1");
+    assert.ok(!String(r.data).includes("object Promise"), "不得返回 [object Promise]");
   });
 
   await test("health 聚合三个子服务，单个失败不拖垮整体", async () => {

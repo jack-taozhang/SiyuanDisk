@@ -375,6 +375,78 @@ if (!fs.existsSync(mf)) {
  *   这类「用兜底掩盖配置错误」的写法本身要警惕。
  */
 
+/* -------------------------------------------------------------------------
+ * 检查：external.js 调用 async 的 API 方法时**必须 await**
+ * ---------------------------------------------------------------------- */
+/*
+ * 背景（2026-09-29 真实缺陷）：
+ *   `webUrl: () => guard(async () => String(API.browserViewUrl(m, p, n) || ""), "webUrl")`
+ *   漏了 `await`（`API.browserViewUrl` 是 async）。`String(promise)` 得到
+ *   字符串 `"[object Promise]"`，`guard()` 还把它当**成功**包进
+ *   `{ok:true, data:"[object Promise]"}` —— 非空、是字符串、所有浅层校验都能过。
+ *   画布独立页双击网盘卡片时浏览器就去开一个叫 `[object Promise]` 的地址，
+ *   表现为「没反应」，而且**任何一层都不报错**。
+ *
+ * 为什么这个检查划算（与文件末尾那条「不做正则静态检查」的结论不冲突）：
+ *   那条讲的是「裸标识符必须有来源」—— 需要区分函数调用/对象键/解构，
+ *   假阳性 200+ 条。而这里只需回答一个**封闭**问题：
+ *   "`API.<名字>(` 里的名字，在 api.js 里是不是 async 前缀？"
+ *   名字集合从 api.js 实测得出，不猜；假阳性只可能来自"同名同步方法"，
+ *   而 API 对象上不允许重名。
+ */
+{
+  const apiSrc = stripComments(fs.readFileSync(path.join(ROOT, "src/api.js"), "utf8"));
+
+  /**
+   * 异步方法的两种声明形式都要认：
+   *   · 方法简写：`async previewUrl(mount, path) {`      （class / 对象字面量）
+   *   · 函数声明：`export async function browserViewUrl(` （模块级导出）
+   *
+   * ★ 这里踩过一次 ★
+   *   初版只写了 `async <name>(`，于是**模块级**的 `async function browserViewUrl`
+   *   根本没被收进集合 ⇒ 集合里缺了唯一出问题的那个名字 ⇒ 检查通过。
+   *   也就是说：**守卫自己静默失效了，而它"看起来"是绿的**。
+   *   所以在下面加了自检（集合必须包含已知的 async 方法），
+   *   任何让集合变空/漏项的改动都会立刻报红，而不是静默放行。
+   */
+  const asyncApiNames = new Set();
+  for (const m of apiSrc.matchAll(/\basync\s+(?:function\s+)?([A-Za-z_$][\w$]*)\s*\(/g)) {
+    asyncApiNames.add(m[1]);
+  }
+
+  /** 已知必须是 async 的方法（回归哨兵）：漏了任何一个都说明收集逻辑坏了 */
+  const KNOWN_ASYNC = ["previewUrl", "cadUrl", "signedRawUrl", "browserViewUrl"];
+  const missingFromSet = KNOWN_ASYNC.filter((name) => !asyncApiNames.has(name));
+  if (missingFromSet.length) {
+    bad(
+      "async 方法名收集自检",
+      `未收集到 ${missingFromSet.join(", ")} —— 收集正则失效，这条检查会假通过（比没有检查更糟）`,
+    );
+  } else {
+    ok(`async 方法名收集自检通过（含 ${KNOWN_ASYNC.join("/")}，共 ${asyncApiNames.size} 个）`);
+  }
+
+  const extSrc = stripComments(fs.readFileSync(path.join(ROOT, "src/external.js"), "utf8"));
+  const missingAwait = [];
+  for (const m of extSrc.matchAll(/(await\s+)?\bAPI\.([A-Za-z_$][\w$]*)\s*\(/g)) {
+    const awaited = Boolean(m[1]);
+    const name = m[2];
+    if (asyncApiNames.has(name) && !awaited) {
+      missingAwait.push(name);
+    }
+  }
+
+  const uniqueMissing = [...new Set(missingAwait)];
+  if (uniqueMissing.length) {
+    bad(
+      "external.js 调用 async 的 API 方法必须 await",
+      `缺少 await：${uniqueMissing.join(", ")} —— String(promise) 会静默得到 "[object Promise]"`,
+    );
+  } else {
+    ok("external.js 对 async 的 API 方法都用了 await");
+  }
+}
+
 console.log("\n" + "=".repeat(52));
 console.log(`  通过 ${pass}   失败 ${fail}`);
 if (problems.length) {

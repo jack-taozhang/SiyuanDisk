@@ -17,6 +17,12 @@
  *                本实例历史上与 SSH 口令相同，故缺省回退到 pass；
  *                但**语义是两件事**，可单独配。
  *   NB_SIYUAN    完整基址（覆盖 HOST/PORT，如 http://1.2.3.4:6806）
+ *   NB_SERVERURL NebulaDisk 网盘后端基址（浏览器可达的那个，默认 :8089）。
+ *                ★ 2026-09-30 新增 ★
+ *                  排查「在浏览器中打开」的预览链路时，探针要直连网盘后端
+ *                  （/api/login /api/preview /api/stat …）。此前只有思源的信息，
+ *                  每次都手写地址 + 口令，正是泄漏的高发点。
+ *                  缺省从 conf.serverUrl 读；再缺省由 HOST + :8089 拼。
  *   CHROME_PATH  Chrome 可执行文件路径
  *   NB_WS        ws 包的 require 路径（找不到时用）
  *
@@ -55,6 +61,16 @@ const AUTH = process.env.NB_AUTH || conf.authCode || PASS;
 const PORT = process.env.NB_PORT || "6806";
 const SIYUAN = process.env.NB_SIYUAN || (HOST ? `http://${HOST}:${PORT}` : "");
 
+/* ★ NebulaDisk 网盘后端基址（2026-09-30 新增）★
+ *   优先级：NB_SERVERURL > conf.serverUrl > http://<HOST>:8089
+ *   末项用 HOST 拼，是因为本实例两处地址同机（NAS 双网口），
+ *   探针通常就在 NAS 同网段跑。
+ *   ★ 注意末尾去斜杠 ★ —— 拼 `/api/preview` 时多一条斜杠会 404。
+ */
+const NEBULA = String(
+  process.env.NB_SERVERURL || conf.serverUrl || (HOST ? `http://${HOST}:8089` : "")
+).replace(/\/+$/, "");
+
 /** 找一个能 require 到的 ws */
 function resolveWs() {
   const tried = [];
@@ -84,9 +100,27 @@ function resolveChrome() {
 }
 
 module.exports = {
-  conf, HOST, USER, PASS, AUTH, PORT, SIYUAN,
+  conf, HOST, USER, PASS, AUTH, PORT, SIYUAN, NEBULA,
   get WS() { return resolveWs(); },
   get CHROME() { return resolveChrome(); },
+  /**
+   * 用管理员口令登录 NebulaDisk，返回访问令牌（Bearer）。
+   *
+   * ★ 为什么要有它 ★
+   *   网盘后端的 /api/login 走 **表单**（Form），不是 JSON ——
+   *   发 JSON 会得到 422「Field required」。踩过一次，写在这里省得再犯。
+   *   /api/me、/api/list、/api/preview 等都认 `Authorization: Bearer <token>`。
+   */
+  async nebulaLogin() {
+    if (!NEBULA) throw new Error("未配置 NebulaDisk 地址（NB_SERVERURL）");
+    if (!USER || !PASS) throw new Error("未配置 NebulaDisk 账号（NB_USER / NB_PASS）");
+    const body = new URLSearchParams({ username: USER, password: PASS });
+    const r = await fetch(`${NEBULA}/api/login`, { method: "POST", body });
+    if (!r.ok) throw new Error(`登录失败 HTTP ${r.status}: ${(await r.text()).slice(0, 200)}`);
+    const j = await r.json();
+    if (!j || !j.token) throw new Error("登录响应缺少 token：" + JSON.stringify(j).slice(0, 200));
+    return j.token;
+  },
   /** 缺关键配置时给一条人话错误，而不是让脚本在后面莫名失败 */
   assertReady() {
     const miss = [];

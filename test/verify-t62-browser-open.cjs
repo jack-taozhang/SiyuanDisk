@@ -14,8 +14,23 @@
  *
  *   ⇒ 「在浏览器中打开」必须按 pickViewer() 的同一套路由分流：
  *       pdf/图片/视频/音频/文本 → /api/raw（原生）
- *       office/压缩包/其它      → kkFileView /preview/onlinePreview（text/html）
+ *       office                  → **后端 /oo 承载页**（真实 origin，内嵌 OnlyOffice）
+ *       压缩包/其它             → kkFileView /preview/onlinePreview（text/html）
  *       cad                     → cad-viewer 深链
+ *
+ *   ★ 2026-09-30（第 3 次修订）承载页形态三代演进 —— 每一代的失败都实测过 ★
+ *     第 1 代 `data:text/html,…`  ：opaque origin ⇒ Chrome 拒载 http 子资源
+ *     第 2 代 `blob:http://…`      ：不透明来源文档不发 Origin/Referer
+ *                                   ⇒ PNA 判 InsecureLocalNetwork，连同源都拦
+ *     第 3 代 `<serverUrl>/oo`    ：真实 http origin（:8089）⇒ 实测全绿 ✅
+ *     根因矩阵（同 origin / 同 isSecureContext=false）见 src/api.js 该函数头注释。
+ *
+ *   ★ 2026-09-30 修订（用户第 2 次报障）★
+ *     上一版这里写的是「office/压缩包/其它 → kkFileView」。用户实测反馈：
+ *     「在浏览器中打开 本该 onlyoffice 打开的，跳转到了 KK 打开」——
+ *     页签内是 OO，浏览器打开却变 kk（且 kk 的 KK_OFFICE_PREVIEW_TYPE=pdf
+ *     会把 docx 转成 PDF 显示，观感更差）。⇒ office 一律走 OO，kk 仅作兜底。
+ *     A4 相应拆成 A4a（office 走 OO）+ A4b（/api/preview 仍是最终兜底）。
  * ========================================================================== */
 const fs = require("fs");
 const path = require("path");
@@ -68,7 +83,85 @@ check("A3 CAD 走 /api/cad/preview（不是 raw）", () => {
   return true;
 });
 
-check("A4 office/其它 兜底走 /api/preview（kkFileView）", () => {
+check("A4a office 优先走 OnlyOffice（buildOoStandaloneUrl）", () => {
+  const i = API_SRC.indexOf("export async function browserViewUrl");
+  const seg = API_SRC.slice(i, i + 4000);
+  const j = seg.indexOf('kind === "office"');
+  if (j < 0) return "没有针对 office 的分支 —— office 会落到 kk，就是本 bug";
+  const offSeg = seg.slice(j, j + 500);
+  if (!/buildOoStandaloneUrl\s*\(/.test(offSeg)) {
+    return "office 分支没有调用 buildOoStandaloneUrl —— 仍会走 kk";
+  }
+  return true;
+});
+
+check("A4b buildOoStandaloneUrl 返回后端 /oo 承载页，且先探测 /api/oo/config", () => {
+  const i = API_SRC.indexOf("async function buildOoStandaloneUrl");
+  if (i < 0) return "没有 buildOoStandaloneUrl 函数";
+  const seg = API_SRC.slice(i, i + 8000);
+  // ★ 端点名卡边界（`(?![\w/])`）：否则 `/api/oo/configX` 这类误写仍会命中（前缀匹配）★
+  if (!/\/api\/oo\/config(?![\w/])/.test(seg)) return "没有请求 /api/oo/config —— 拿不到 OO 配置";
+  // ★★ 2026-09-30（第 3 代契约）：必须返回**后端 /oo 承载页** ★★
+  //   第 1 代 data: → opaque origin 拒载 api.js
+  //   第 2 代 blob: → 不带 Origin/Referer，被 Chrome PNA 判 InsecureLocalNetwork
+  //   第 3 代 /oo  → 真实 http origin（:8089），✅ 实测 docsAPI:true、零失败请求
+  if (!/fixUrl\(\s*["']\/oo\?(?![\w=])/.test(seg)) {
+    return "没有 fixUrl(\"/oo?...\") —— 没指向后端承载页，会退回复现 api.js 加载失败";
+  }
+  // ★ 路径判据同样要卡边界（同 INJ-9 的教训）★
+  //   否则 `fixUrl("/oo?cfg=<base64>")` 这种「把 config 塞进 URL」的写法
+  //   仍会命中 `/oo?` 前缀 ⇒ 判据常绿（本文件 INJ-11 抓出来的）。
+  if (/fixUrl\(\s*["']\/oo\?[^"']*(cfg|apiJs|config)/.test(seg)) {
+    return "把 config/apiJs 拼进了 /oo 的 URL —— 签名超长且 token 泄漏到历史/日志";
+  }
+  if (/return\s+["']data:text\/html/.test(seg)) {
+    return "仍然返回 data:text/html —— 会复现「无法加载 OnlyOffice api.js」";
+  }
+  if (/URL\.createObjectURL\s*\(/.test(seg)) {
+    return "仍在用 URL.createObjectURL 造 blob 页 —— 不透明来源会被 PNA 拦（InsecureLocalNetwork）";
+  }
+  if (/new\s+Blob\s*\(/.test(seg)) {
+    return "仍在造 Blob 承载页 —— 同上，会复现 PNA 拦截";
+  }
+  // 探测结果应仍被用于「可用性判定」（配置不完整就降级）
+  if (!/cfg\.config/.test(seg)) {
+    return "没有校验 cfg.config —— OO 不可用时无从降级";
+  }
+  return true;
+});
+
+check("A4b2 buildOoStandaloneUrl 不把 config 塞进 URL（签名/超长隐患）", () => {
+  // config 含 HS256 签名且约 2.9KB，进 URL 会超长 + token 泄漏到历史/日志。
+  // 承载页自己按 mount/path 重新生成 config。
+  const i = API_SRC.indexOf("async function buildOoStandaloneUrl");
+  if (i < 0) return "没有 buildOoStandaloneUrl 函数";
+  const seg = API_SRC.slice(i, i + 8000);
+  if (/data:text\/html;charset=utf-8,"\s*\+/.test(seg)) {
+    return "检测到 `data:text/html;charset=utf-8,` + 拼接 —— 退回 Data URL 了";
+  }
+  if (/\/oo\?[^"']*cfg(\.config|\.apiJs)/.test(seg) || /fixUrl\(\s*["']\/oo\?[^"']*(cfg|apiJs|config)/.test(seg)) {
+    return "把 config/apiJs 拼进了 /oo 的 URL —— 签名会超长且 token 泄漏";
+  }
+  if (!/encodeURIComponent\(\s*String\(\s*(mount|path)/.test(seg)) {
+    return "没有对 mount/path 做 encodeURIComponent —— 中文/特殊字符路径会拼坏 URL";
+  }
+  return true;
+});
+
+check("A4c office 分支拿不到 OO 时必须降级（返回空串而非抛错）", () => {
+  const i = API_SRC.indexOf("async function buildOoStandaloneUrl");
+  if (i < 0) return "没有 buildOoStandaloneUrl 函数";
+  const seg = API_SRC.slice(i, i + 6000);
+  // 失败路径必须是 return ""（由调用方落到 kk 兜底），不能 throw
+  const hasEmptyReturn = /return\s+""\s*;/.test(seg);
+  if (!hasEmptyReturn) return "失败路径没有 `return \"\"` —— 调用方无从降级";
+  if (/throw\s+new\s+ApiError/.test(seg.slice(0, 1200))) {
+    return "配置不可用时直接抛异常 —— 会把用户丢在报错里，应返回空串降级";
+  }
+  return true;
+});
+
+check("A4d office/其它 兜底走 /api/preview（kkFileView）", () => {
   const i = API_SRC.indexOf("export async function browserViewUrl");
   const seg = API_SRC.slice(i, i + 4000);
   if (!/apiGet\(\s*["']\/api\/preview["']/.test(seg)) {

@@ -2245,9 +2245,17 @@ export class FileTree {
    *
    *   现在两处都收敛到 browserViewUrl()：
    *     · pdf/图片/视频/音频/文本 → /api/raw（浏览器原生，零转换、最快）
-   *     · office/压缩包/其它      → kkFileView /preview/onlinePreview（text/html）
+   *     · office                  → **OnlyOffice 独立承载页**（2026-09-30 修正）
+   *     · 压缩包/其它             → kkFileView /preview/onlinePreview（text/html）
    *     · cad                     → cad-viewer 深链
    *   统一过 browserReachableUrl() 改写 nebula:8088 这个容器内主机名。
+   *
+   * ★★ 2026-09-30：office 由 kkFileView 改回 OnlyOffice ★★
+   *   用户报障：「word 没有用 onlyoffice 打开。变成了PDF」、
+   *             「在浏览器中打开…现在是跳转到 kkfileview 了，我需要跳转到 OnlyOffice」。
+   *   kkFileView 恒把 docx 转 PDF 显示（`KK_OFFICE_PREVIEW_TYPE=pdf`），
+   *   与页签内 `viewer.renderOffice()`（走 OO）行为不一致 ⇒ 已统一为 OO。
+   *   改法与安全性论证见 api.js 的 browserViewUrl()。
    *
    * ⚠️ 绝对不要自己拼 `/api/raw/<name>?mount=&path=` ——
    *   后端 rawlink 校验 exp + sig，自己拼是 403。

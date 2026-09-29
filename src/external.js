@@ -231,9 +231,26 @@ export function createExternalContract({ API, pickViewer, diag } = {}) {
     cadUrl: (mount, path) =>
       guard(async () => String(await API.cadUrl(mount, path) || ""), "cadUrl"),
 
-    /** 网页直连地址（可选走 `/lite` 外壳，用于收第三方 UI）。 */
+    /**
+     * 网页直连地址（可选走 `/lite` 外壳，用于收第三方 UI）。
+     *
+     * ★★★ 这里的 `await` 不能省（2026-09-29 修）★★★
+     *
+     *   `API.browserViewUrl` 是 **async**（它内部要 await 签名/预览接口），
+     *   少写 await 时 `String(promise)` 会**静默**得到字符串 `"[object Promise]"`，
+     *   `guard()` 还会把它当成**成功**包进 `{ok:true,data:"[object Promise]"}`。
+     *
+     *   于是消费方（画布）拿到的"地址"看着非空、能通过一切非空校验，
+     *   最终浏览器去打开一个叫 `[object Promise]` 的地址 —— 表现为
+     *   「双击网盘卡片没反应 / 打开一个空白页」，而**任何一层都不报错**。
+     *   实测就是这个现象（画布独立页双击 PDF 卡片时抓到 `[object Promise]`）。
+     *
+     *   对照：同文件里 previewUrl / cadUrl / signedRawUrl 都写了 `await`，
+     *   只有这一处漏了 —— 典型的下标不一致缺陷。
+     *   （downloadUrl 不用 await 是对的：`API.downloadUrl` 是同步方法。）
+     */
     webUrl: (mount, path, name) =>
-      guard(async () => String(API.browserViewUrl(mount, path, name) || ""), "webUrl"),
+      guard(async () => String(await API.browserViewUrl(mount, path, name) || ""), "webUrl"),
 
     /**
      * 签名直链（下载/原始字节）。

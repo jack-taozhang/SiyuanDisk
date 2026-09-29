@@ -82,6 +82,54 @@ const judge = {
     const seg = apiSrc.slice(i, i + 4000);
     return /apiGet\(\s*["']\/api\/preview["']/.test(seg) ? true : "没有 /api/preview 兜底";
   },
+  /**
+   * ★ 2026-09-30 新增：office 分支是否走 OnlyOffice 承载页 ★
+   *   （用户第 2 次报障的正是这条 —— office 被错送到 kk）
+   */
+  officeUsesOo(apiSrc) {
+    const i = apiSrc.indexOf("export async function browserViewUrl");
+    if (i < 0) return "没有 browserViewUrl";
+    const seg = apiSrc.slice(i, i + 4000);
+    const j = seg.indexOf('kind === "office"');
+    if (j < 0) return "没有 office 分支（office 会落到 kk）";
+    return /buildOoStandaloneUrl\s*\(/.test(seg.slice(j, j + 500))
+      ? true
+      : "office 分支没调用 buildOoStandaloneUrl";
+  },
+  /** buildOoStandaloneUrl 是否满足「先探测 /api/oo/config + 返回后端 /oo 承载页」两要件 */
+  ooBuilderContract(apiSrc) {
+    const i = apiSrc.indexOf("async function buildOoStandaloneUrl");
+    if (i < 0) return "没有 buildOoStandaloneUrl 函数";
+    const seg = apiSrc.slice(i, i + 8000);
+    // ★ 端点名必须卡边界（`(?![\w/])`）★
+    //   反例（本文件 INJ-9 抓出来的）：写成 /\/api\/oo\/config/ 时，
+    //   把端点误改成 `/api/oo/configX` 后**正则仍匹配**（前缀命中）⇒ 判据常绿。
+    //   这与判据设计的老规矩一致：凡是「标识符/路径」都要声明它到此结束。
+    if (!/\/api\/oo\/config(?![\w/])/.test(seg)) return "没有请求 /api/oo/config";
+    // ★★ 2026-09-30（第 3 代契约）：必须返回**后端 /oo 承载页** ★★
+    //   第 1 代 data: → opaque origin 拒载 api.js
+    //   第 2 代 blob: → 不透明来源不发 Origin/Referer ⇒ PNA 判 InsecureLocalNetwork
+    //   第 3 代 /oo  → 真实 http origin（:8089）⇒ 实测 docsAPI:true、零失败请求 ✅
+    if (!/fixUrl\(\s*["']\/oo\?(?![\w=])/.test(seg)) return "没有 fixUrl(\"/oo?...\")（没指向后端承载页）";
+    // ★ 路径判据同样要卡边界（本文件 INJ-11 抓出来的）★
+    //   否则 `fixUrl("/oo?cfg=<base64>")` 仍命中 `/oo?` 前缀 ⇒ 判据常绿。
+    if (/fixUrl\(\s*["']\/oo\?[^"']*(cfg|apiJs|config)/.test(seg)) {
+      return "把 config/apiJs 拼进了 /oo 的 URL（签名超长/token 泄漏）";
+    }
+    if (/return\s+["']data:text\/html/.test(seg)) return "仍返回 data:text/html（会拒载 api.js）";
+    if (/URL\.createObjectURL\s*\(/.test(seg)) return "仍在造 blob 页（不透明来源会被 PNA 拦）";
+    if (/new\s+Blob\s*\(/.test(seg)) return "仍在造 Blob 承载页（同上，会被 PNA 拦）";
+    if (!/cfg\.config/.test(seg)) return "没有校验 cfg.config（OO 不可用时无从降级）";
+    return true;
+  },
+  /** 失败必须降级（return ""），不能抛异常把用户丢在报错里 */
+  ooDegradesGracefully(apiSrc) {
+    const i = apiSrc.indexOf("async function buildOoStandaloneUrl");
+    if (i < 0) return "没有 buildOoStandaloneUrl 函数";
+    const seg = apiSrc.slice(i, i + 6000);
+    if (!/return\s+""\s*;/.test(seg)) return "失败路径没有 `return \"\"`";
+    return true;
+  },
   /** cad 是否走 cad/preview */
   cadUsesCadApi(apiSrc) {
     const i = apiSrc.indexOf("export async function browserViewUrl");
@@ -134,6 +182,9 @@ const judge = {
 console.log("\n【基线】当前源码应全绿");
 expectGreen("BASE-1 browserViewUrl 用 pickViewer 路由", judge.usesPickViewer(API_SRC));
 expectGreen("BASE-2 office 兜底走 kk", judge.officeFallsToKk(API_SRC));
+expectGreen("BASE-2b office 优先走 OnlyOffice", judge.officeUsesOo(API_SRC));
+expectGreen("BASE-2c buildOoStandaloneUrl 契约（oo/config 探测 + 后端 /oo 承载页）", judge.ooBuilderContract(API_SRC));
+expectGreen("BASE-2d buildOoStandaloneUrl 失败会降级（return \"\"）", judge.ooDegradesGracefully(API_SRC));
 expectGreen("BASE-3 cad 走 cad/preview", judge.cadUsesCadApi(API_SRC));
 expectGreen("BASE-4 viewer 用 browserViewUrl", judge.viewerUsesHelper(VIEWER_SRC));
 expectGreen("BASE-5 viewer 不再开 raw", judge.viewerNoRaw(VIEWER_SRC));
@@ -285,6 +336,112 @@ console.log("\n【INJ】逐个注入，对应判据必须变红");
       bad("INJ-6 自检失败", "注入后函数体里没有 browserViewUrlX —— 注入落点错了");
     } else {
       expectRed("INJ-6 函数体里调用名打错（browserViewUrlX）", judge.viewerUsesHelper(out));
+    }
+  }
+}
+
+/*
+ * ★ 2026-09-30 新增：INJ-7/8/9 —— 保护「office 走 OnlyOffice」这条新契约 ★
+ *   起因：用户第 2 次报障「在浏览器中打开 本该 onlyoffice 打开的，跳转到了 KK」。
+ *   修完后发现原测试套件**完全没覆盖这条**（BASE-2 甚至还在断言「office 兜底走 kk」），
+ *   于是修复处于「无回归保护」状态。这里补上注入，证明新判据不是恒绿。
+ */
+
+// INJ-7：office 分支的 buildOoStandaloneUrl 改回直接走 kk ⇒ officeUsesOo 必须红
+{
+  const i = API_SRC.indexOf('kind === "office"');
+  if (i < 0) {
+    bad("INJ-7 注入未生效", "没有 office 分支");
+  } else {
+    const seg = API_SRC.slice(i, i + 500);
+    const newSeg = seg.replace(/const\s+oo\s*=\s*await\s+buildOoStandaloneUrl\s*\(/, "const oo = null && (");
+    if (newSeg === seg) bad("INJ-7 注入未生效", "office 分支里没找到 buildOoStandaloneUrl 调用");
+    else {
+      const out = API_SRC.slice(0, i) + newSeg + API_SRC.slice(i + 500);
+      expectRed("INJ-7 office 分支不再走 OO（复现用户报障）", judge.officeUsesOo(out));
+    }
+  }
+}
+
+// INJ-8：把**后端 /oo 承载页**退回「本地造 blob 页」⇒ 契约判据必须红
+//   ★ 2026-09-30（第 3 次修订）★
+//     第 2 代实现是「造 blob 页」，实测被 Chrome PNA 判 InsecureLocalNetwork
+//     （不透明来源文档不发 Origin/Referer）；第 3 代改为指向后端 /oo 页。
+//     现在最大的风险是**有人改回 blob/data: 造页** —— 那会复现「无法加载 api.js」。
+{
+  const i = API_SRC.indexOf("async function buildOoStandaloneUrl");
+  if (i < 0) {
+    bad("INJ-8 注入未生效", "没有 buildOoStandaloneUrl 函数");
+  } else {
+    const seg = API_SRC.slice(i, i + 8000);
+    // 把后端承载页那行换成「本地造 blob 页」
+    const newSeg = seg.replace(
+      /const\s+url\s*=\s*fixUrl\(\s*["']\/oo\?["'][^)]*\)\s*;/,
+      'const html = "<html></html>";\n  const url = URL.createObjectURL(new Blob([html], { type: "text/html" }));'
+    );
+    if (newSeg === seg) bad("INJ-8 注入未生效", "函数里没找到 `const url = fixUrl(\"/oo?...\")`（后端承载页返回点）");
+    else {
+      const out = API_SRC.slice(0, i) + newSeg + API_SRC.slice(i + 8000);
+      expectRed("INJ-8 承载页退回 blob 造页（复现 PNA 拦截 api.js）", judge.ooBuilderContract(out));
+    }
+  }
+}
+
+// INJ-9：把 /api/oo/config 换成不存在的端点 ⇒ 契约判据必须红
+{
+  const i = API_SRC.indexOf("async function buildOoStandaloneUrl");
+  if (i < 0) {
+    bad("INJ-9 注入未生效", "没有 buildOoStandaloneUrl 函数");
+  } else {
+    const seg = API_SRC.slice(i, i + 6000);
+    const newSeg = seg.replace(/\/api\/oo\/config/, "/api/oo/configX");
+    if (newSeg === seg) bad("INJ-9 注入未生效", "函数里没找到 /api/oo/config");
+    else {
+      const out = API_SRC.slice(0, i) + newSeg + API_SRC.slice(i + 6000);
+      expectRed("INJ-9 端点名打错（oo/configX）", judge.ooBuilderContract(out));
+    }
+  }
+}
+
+// INJ-10：把 /oo 承载页的 URL 路径写错（/oox）⇒ 必须红
+//   ★ 2026-09-30 新增 ★
+//     与 INJ-9 同源的教训：路径判据必须卡边界。这里验证「/oo」这个新契约
+//     本身也是被判据守住的 —— 写错成 /oox 时，fixUrl("/oo?") 不再匹配。
+{
+  const i = API_SRC.indexOf("async function buildOoStandaloneUrl");
+  if (i < 0) {
+    bad("INJ-10 注入未生效", "没有 buildOoStandaloneUrl 函数");
+  } else {
+    const seg = API_SRC.slice(i, i + 8000);
+    const newSeg = seg.replace(/fixUrl\(\s*["']\/oo\?/, 'fixUrl("/oox?');
+    if (newSeg === seg) bad("INJ-10 注入未生效", "没找到 fixUrl(\"/oo?\")");
+    else {
+      const out = API_SRC.slice(0, i) + newSeg + API_SRC.slice(i + 8000);
+      expectRed("INJ-10 承载页路径写错（/oox）", judge.ooBuilderContract(out));
+    }
+  }
+}
+
+// INJ-11：把 config 塞进 /oo 的 URL（签名超长 + token 泄漏）⇒ 必须红
+//   ★ 2026-09-30 新增 ★
+//     config 含 HS256 签名、约 2.9KB。一旦有人图省事把它拼进 URL，
+//     既会超长，也会把 JWT 写进浏览器历史与访问日志。
+//     注入形如 fixUrl("/oo?cfg=" + ...) —— 前半段仍含 `/oo?`，
+//     专门用来验证「路径判据卡了边界」这件事本身。
+{
+  const i = API_SRC.indexOf("async function buildOoStandaloneUrl");
+  if (i < 0) {
+    bad("INJ-11 注入未生效", "没有 buildOoStandaloneUrl 函数");
+  } else {
+    const seg = API_SRC.slice(i, i + 8000);
+    const newSeg = seg.replace(
+      /fixUrl\(\s*["']\/oo\?["']/,
+      'fixUrl("/oo?cfg=" + encodeURIComponent(JSON.stringify(cfg.config)) + "&"'
+    );
+    if (newSeg === seg) bad("INJ-11 注入未生效", "没找到 fixUrl(\"/oo?\" 的调用");
+    else {
+      const out = API_SRC.slice(0, i) + newSeg + API_SRC.slice(i + 8000);
+      expectRed("INJ-11 把 config 塞进 URL（签名超长/泄漏）", judge.ooBuilderContract(out));
     }
   }
 }

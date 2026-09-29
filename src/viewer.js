@@ -649,13 +649,18 @@ export class Viewer {
    *   ⇒ 现在统一走 `API.browserViewUrl()`：它按 `pickViewer()` 的**同一套路由**
    *     选「渲染通道」 —— 与页签里 viewer.render 的分流一一对齐：
    *       · pdf/图片/视频/音频/文本 → /api/raw（原生，零转换）
-   *       · office/压缩包/其它      → kkFileView /preview/onlinePreview（text/html）
+   *       · office                  → **OnlyOffice 独立承载页**（可编辑，与页签一致）
+   *       · 压缩包/其它             → kkFileView /preview/onlinePreview（text/html）
    *       · cad                     → cad-viewer 深链
    *     并统一过 browserReachableUrl() 把 nebula:8088 换成浏览器可达主机。
    *
-   * ★ 为什么 office 不走 OnlyOffice ★
-   *   OO 需要 document.key + callbackUrl，每次打开可能触发**回调写回**；
-   *   用户只是要「看一眼」。⇒ 走只读的 kkFileView 更稳妥。
+   * ★★ 2026-09-30：office 已由 kkFileView 改回 OnlyOffice ★★
+   *   用户原话：「word 没有用 onlyoffice 打开。变成了PDF」
+   *              「在浏览器中打开这个功能，现在是跳转到 kkfileview 了，
+   *                CAD 预览功能是正常的，我需要跳转到 OnlyOffice」
+   *   kkFileView 会把 docx **转成 PDF** 再显示（页面里 `…docx.pdf`），
+   *   既不是 OO、也不能编辑，与「在浏览器中打开」的语义不符。
+   *   详情与安全性论证见 api.js 的 browserViewUrl() 注释。
    */
   async openInBrowser() {
     try {

@@ -50,3 +50,9 @@ tools/_probe/_page/
 #   dist/ 已入库（见上），但 dist-package/ 是 zip，二进制且可随时重建 ⇒ 不入库
 dist-package/
 .zipverify/
+
+# ---- 临时诊断区（不入库）----
+#   .scratch/  headless Chrome profile（数百 MB）+ 一次性诊断脚本 + 截图。
+#   ★ 有长期价值的探针请放 tools/_probe-*.cjs（那些是入库的）；
+#     这里只放「用完即弃」的东西，别把根因结论留在这儿。
+.scratch/

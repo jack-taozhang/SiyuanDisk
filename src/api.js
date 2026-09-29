@@ -1202,20 +1202,39 @@ export function isEditable(name) {
  *
  *     · pdf / image / video / audio / text → 原生类型，`/api/raw` 即可
  *       （browserReachableUrl 会把 nebula:8088 换成浏览器可达主机）
- *     · office / archive / 其它            → kkFileView `/preview/onlinePreview`
- *       （实测返回 text/html，内部自己去拉 raw 并转成 HTML —— 浏览器能看）
+ *     · office                             → **OnlyOffice 独立承载页**
+ *       （用户 2026-09-30 明确要求：Office 必须用 OO 打开，不能退化成 PDF 预览）
+ *     · 压缩包 / 其它                       → kkFileView `/preview/onlinePreview`
  *     · cad                                → cad-viewer 深链
  *
- * ★ 关于 OnlyOffice 为什么不走 OO ★
- *   OO **不是无状态查看页**：它需要一个 `document.key` + `callbackUrl`，
- *   每次打开都可能触发回调写回。用户要的是「看一眼」，不是「起一个编辑会话」。
- *   ⇒ 浏览器打开走 **kkFileView**（只读渲染、无副作用）更稳妥，
- *     与 viewer.renderKk() 的语义一致。
+ * ★★ 2026-09-30 修正：office 由 kkFileView 改回 OnlyOffice ★★
  *
- * ★ 为什么 office 不退回 raw ★
- *   raw 对 office 恒定为下载（就是本次 bug）。宁可给 kkFileView 页，
- *   哪怕 kkFileView 偶发慢（实测大 docx 首次转换会超过 20s），
- *   至少它**是在浏览器里打开**，符合按钮文案。
+ *   用户报障（原话）：
+ *     「在浏览器中打开 出问题了。word 没有用 onlyoffice 打开。变成了PDF」
+ *     「在浏览器中打开这个功能，现在是跳转到 kkfileview 了，CAD 预览功能是正常的，
+ *       在浏览器中打开变成跳转到 kkfileview 了，我需要跳转到 OnlyOffice」
+ *
+ *   病根：本函数（#62 引入）把 office **硬编码**成了 kkFileView。
+ *     而 kkFileView 对 Office 的处理是「**转换成 PDF** 再用 PDF.js 显示」
+ *     （实测：返回页里 `var url = '…docx.pdf'`；compose 里
+ *      `KK_OFFICE_PREVIEW_TYPE=pdf`）。于是用户看到 word 变成 PDF 预览 ——
+ *     既不是他点的 OO，也不能编辑，与「在浏览器中打开」的语义不符。
+ *
+ *   当时之所以不走 OO，注释里给的理由是「OO 不是无状态查看页，
+ *   需要 document.key + callbackUrl，每次打开可能触发回调写回」。
+ *   该担心的**实际不成立**（已实测核对后端 onlyoffice.py）：
+ *     · 回调只在 `status ∈ {2, 6}`（有新内容）时写回；
+ *     · 目录不可写时后端给 `mode="view"` ⇒ 不会产生保存；
+ *     · `status ∈ {1, 4}` 直接 `return {"error": 0}`，不落盘。
+ *   ⇒ 用 OO 打开是**安全**的，与页签内 `viewer.renderOffice()` 同一条腿。
+ *
+ * ★ 为什么不能直接把 `cfg.config` 塞进 URL ★
+ *   浏览器新窗口必须能**独立加载**一个页面来承载 DocsAPI。
+ *   OO 的编辑器只能由 `new DocsAPI.DocEditor(id, config)` 渲染，
+ *   所以这里构造一段**自包含 HTML**（Data URL），它在新窗口里：
+ *     ① 加载后端给的 `cfg.apiJs`
+ *     ② 用后端签名的 `cfg.config` 建编辑器
+ *   签名由后端完成（前端改 config 会让 token 失配），此处**原样透传**。
  *
  * @param {string} mount
  * @param {string} path
@@ -1234,9 +1253,14 @@ export async function browserViewUrl(mount, path, name) {
     // 拿不到就退回 kk（kk 对 dwg 也能渲染）
   }
 
-  // ② Office / 压缩包 / 未知：kkFileView 渲染页
-  //    ③ 原生类型（pdf/image/video/audio/text）：也用 kk **只有当 raw 不可用时**；
-  //       正常情况下原生类型走 raw（零转换、最快）。
+  // ② ★ Office：优先 OnlyOffice（用户明确要求）；拿不到配置才降级 kk ★
+  if (kind === "office") {
+    const oo = await buildOoStandaloneUrl(mount, path, nm);
+    if (oo) return oo;
+    // 落到 ④ 的 kkFileView 兜底
+  }
+
+  // ③ 原生类型（pdf/image/video/audio/text）：走 raw（零转换、最快）
   const NATIVE = kind === "pdf" || kind === "image" ||
                  kind === "video" || kind === "audio" || kind === "text";
 
@@ -1253,6 +1277,79 @@ export async function browserViewUrl(mount, path, name) {
   const u = browserReachableUrl(r && r.url);
   if (u) return u;
   throw new ApiError("后端未返回可预览的地址", 0, "api");
+}
+
+/**
+ * 为「在**浏览器新窗口**中打开 Office 文档」取得 OnlyOffice 承载页地址。
+ *
+ * ★★ 返回**后端承载页的 URL**（`<serverUrl>/oo?mount=…&path=…`）★★
+ *    由后端渲染 config 并内联进 HTML，前端不再自己造页。
+ *
+ * ── 三代实现的演进（每一代的失败都实测过，别再退回去）────────────────
+ *
+ *   【第 1 代】`data:text/html;charset=utf-8,...`
+ *     症状：用户报「OnlyOffice 打开失败 / 无法加载 api.js」。
+ *     原因：data: 是**不透明来源**（origin=null）⇒ Chrome 拒载 http 子资源。
+ *
+ *   【第 2 代】`blob:http://<思源主机>/<uuid>`
+ *     看起来对（blob 继承创建者 origin ⇒ origin=http://…:6806，是正常来源），
+ *     实测仍失败：`net::ERR_FAILED` + `corsError: "InsecureLocalNetwork"`。
+ *
+ *     ★ 真根因（2026-09-30 headless Chrome 矩阵实验，同 origin / 同 isSecureContext=false）★
+ *
+ *       | 宿主文档              | 请求                  | Origin | Referer | 结果 |
+ *       |----------------------|-----------------------|--------|---------|------|
+ *       | 真实 http :6806       | script → :8082/api.js | 无     | **有**  | ✅   |
+ *       | blob(:6806)          | script → :8082/api.js | 无     | **无**  | ❌ InsecureLocalNetwork |
+ *       | blob(:6806)          | script → 同源 :6806   | 无     | **无**  | ❌ InsecureLocalNetwork |
+ *       | blob(:6806)          | fetch  → :8082/api.js | 无     | **无**  | ❌ InsecureLocalNetwork |
+ *
+ *       ⇒ **blob（不透明来源）文档里发起的所有子资源请求都不带 Origin/Referer**，
+ *         Chrome Private Network Access 判定为「非安全上下文 + 更私有地址空间」
+ *         一律拦截 —— **连同源资源都取不到**。
+ *       ⇒ 与 CORS 头、CSP、混合内容、端口全无关，改前端无解。
+ *
+ *   【第 3 代 · 当前】后端真实页面 `<serverUrl>/oo?mount=&path=`
+ *     承载页运行在**真实 http origin**（:8089，与网盘同源），浏览器自动带
+ *     `nebula_session` Cookie ⇒ 后端可直接鉴权并生成 config。
+ *     实测：`docsAPI:true`、零失败请求、OnlyOffice 完整渲染（含工具栏/缩略图）。
+ *
+ * ── 为什么 config 由后端生成、而不是前端塞进 URL ──────────────────────
+ *   ① config 里含 **HS256 签名**（`_sign()` 对整份 config 签名），前端改任何
+ *      字段都会失配白屏；
+ *   ② config 序列化后约 **2.9 KB**（含 JWT），base64 进 URL 会超长，
+ *      还会把 token 写进浏览器历史与访问日志。
+ *
+ * ── 仍保留一次 `POST /api/oo/config` 探测 ─────────────────────────────
+ *   只为**提前判断 OO 是否可用**：OO 未配置 / 无权限 / 网络不通时返回 ""，
+ *   由调用方降级到 kkFileView，绝不把用户丢进一个空白窗口。
+ *   探测结果本身**不参与** URL 构造。
+ *
+ * @returns {Promise<string>} `/oo` 承载页的绝对 URL；不可用时返回 ""
+ */
+async function buildOoStandaloneUrl(mount, path, name) {
+  let cfg;
+  try {
+    cfg = await apiPost("/api/oo/config", { mount, path });
+  } catch (e) {
+    diag(`[oib] OnlyOffice 配置不可用，降级 kkFileView：${(e && e.message) || e}`);
+    return "";
+  }
+  if (!cfg || !cfg.ok || !cfg.config || !cfg.apiJs) {
+    diag("[oib] OnlyOffice 配置不完整，降级 kkFileView");
+    return "";
+  }
+
+  // ★ 只需 mount/path —— config 由后端在 /oo 页里重新生成 ★
+  const qs = "mount=" + encodeURIComponent(String(mount || ""))
+           + "&path="  + encodeURIComponent(String(path  || ""));
+  const url = fixUrl("/oo?" + qs);
+  if (!url) {
+    diag("[oib] 无法解析 /oo 承载页地址，降级 kkFileView");
+    return "";
+  }
+  diag(`[oib] OnlyOffice 承载页 → ${url.slice(0, 90)}`);
+  return url;
 }
 
 /* -------------------------------------------------------------------------
