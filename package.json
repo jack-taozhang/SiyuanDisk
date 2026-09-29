@@ -1,6 +1,6 @@
 {
   "name": "siyuan-nebuladisk",
-  "version": "1.0.2",
+  "version": "1.0.3",
   "description": "在思源笔记中集成 NebulaDisk 网盘：侧边栏浏览、在线预览与编辑、笔记内嵌",
   "private": true,
   "type": "commonjs",
