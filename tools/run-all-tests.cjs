@@ -14,6 +14,12 @@ const ROOT = path.resolve(__dirname, "..");
 const NODE = process.execPath;
 
 const SUITES = [
+  // ★★ 第 0 道闸门：凭据泄漏 —— 放最前面，fail fast ★★
+  //   理由：一旦命中「明文口令」，后面的测试跑得再绿也没意义 —— 这份代码不该被推出去。
+  //   本项目真实踩过多次（一次 5 个脚本同时硬编码口令；2026-09-29 又 1 个）。
+  //   它只把「明文口令」判为失败；机器专属路径只作警告（仓库里本来就有合法用法），
+  //   详见 tools/check-secrets.cjs 顶部说明。
+  ["tools/check-secrets.cjs", "★ 凭据闸门（明文口令）"],
   ["test/syntax.check.js", "静态检查（模块/导入/清单）"],
   ["test/proxy.test.js", "代理单元测试"],
   ["test/embed.test.js", "嵌入块单元测试"],

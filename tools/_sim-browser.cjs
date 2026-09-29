@@ -113,6 +113,21 @@ console.log(`bundle: ${BUNDLE}  (${js.length}B)`);
 console.log(`页面: ${sandbox.location.href}`);
 console.log("");
 
+/* ★★ 直连基址：从 sandbox.location 推导，**不再硬编码 IP** ★★
+ *
+ *   踩过（2026-09-28 NAS 换 IP 172.16.30.128 → 192.168.193.70）：
+ *   本文件里 9 处字面量都改了，**唯独 5 处断言的正则漏改** ——
+ *   而报错文案却改成了新 IP，于是「文案说新 IP、正则查旧 IP」，
+ *   整条「浏览器端直连通道」测试变红却一直没人发现。
+ *   （发现方式：2026-09-29 跑 tools/run-all-tests.cjs 汇总时露出来的。）
+ *
+ *   ⇒ 统一从这里取。下次换 IP 只改 sandbox.location 一处。
+ */
+const DIRECT_BASE = "http://" + sandbox.location.hostname + ":8089";
+const escRe = (t) => t.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+const RE_DIRECT = new RegExp("^" + escRe(DIRECT_BASE) + "/");
+const RE_DIRECT_RAW = new RegExp("^" + escRe(DIRECT_BASE) + "/api/raw/");
+
 const moduleObj = { exports: {} };
 const exportsObj = moduleObj.exports;
 
@@ -226,7 +241,7 @@ if (typeof exp !== "function") {
     const pv = await inst.api.previewUrl("售前项目", "/a.pdf");
     console.log("  previewUrl 请求地址 =", seenUrl);
     console.log("  previewUrl 返回 url =", pv && pv.url);
-    if (!/^http:\/\/172\.16\.30\.128:8089\//.test(String(pv && pv.url))) {
+    if (!RE_DIRECT.test(String(pv && pv.url))) {
       console.log("❌ previewUrl 应拼直连基址 192.168.193.70:8089");
       process.exit(1);
     }
@@ -267,7 +282,7 @@ if (typeof exp !== "function") {
         console.log("❌ 仍然残留容器内主机名");
         process.exit(1);
       }
-      if (!/^http:\/\/172\.16\.30\.128:8089\//.test(out)) {
+      if (!RE_DIRECT.test(out)) {
         console.log("❌ 应改写为直连基址 192.168.193.70:8089");
         process.exit(1);
       }
@@ -320,7 +335,7 @@ if (typeof exp !== "function") {
       console.log("❌ signedRawUrl 仍在返回容器内主机");
       process.exit(1);
     }
-    if (!/^http:\/\/172\.16\.30\.128:8089\//.test(String(signed))) {
+    if (!RE_DIRECT.test(String(signed))) {
       console.log("❌ signedRawUrl 应改写为直连基址");
       process.exit(1);
     }
@@ -354,7 +369,7 @@ if (typeof exp !== "function") {
       console.log("❌ 直连通道绝不能拼出 127.0.0.1（这就是原 bug）");
       process.exit(1);
     }
-    if (!/^http:\/\/172\.16\.30\.128:8089\//.test(syncDl)) {
+    if (!RE_DIRECT.test(syncDl)) {
       console.log("❌ 直连通道 downloadUrl 应指向 192.168.193.70:8089");
       process.exit(1);
     }
@@ -391,7 +406,7 @@ if (typeof exp !== "function") {
       console.log("❌ signedDownloadUrl 不得含回环或容器内主机");
       process.exit(1);
     }
-    if (!/^http:\/\/172\.16\.30\.128:8089\/api\/raw\//.test(sd)) {
+    if (!RE_DIRECT_RAW.test(sd)) {
       console.log("❌ 直连通道应走 /api/raw 签名直链");
       process.exit(1);
     }
