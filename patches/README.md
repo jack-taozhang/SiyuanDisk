@@ -283,3 +283,75 @@ curl -s -D- -o /dev/null "$B/f/<token>"    # 期望 content-disposition: attachm
 
 这样「1 小时 / 7 天 / 永久」三档能用同一套字段表达，把 `/s/` 也统一进来。
 现在不建议做（会牵动 `/s/` 的既有语义）。
+
+---
+
+## 第三轮（2026-09-30 晚）：批量条常显 + 「读不出内容」明确报错（后端 1.2.3）
+
+> ⚠️ 先说一件与本文档有关的事：**本仓库的 main 在当晚被另一个并发会话改写过**
+> （新增了 `tools/gh-push-api.mjs` / `gh-release.mjs` 与 `package.json` 的
+> `gh:push` / `gh:release`），本文档此前那两个「统一链接」「第二轮（面板/二维码）」的
+> 归档提交**已不在 main 的历史里**。本节按当前 main 重写，自成一体。
+
+### 用户原话 → 落点
+
+| 用户原话 | 落点 |
+|---|---|
+| 「批量操作的 菜单条 一直显示即可」 | `web/js/links.js` 的 `renderBulk()` 改为恒定占位；CSS 加 `.lm-bulk.is-empty` |
+| 「目前本机OO 打开文件有问题。排查一下」 | 真因是**云端占位文件**（用户数据侧）；但顺手修掉产品侧的真 bug：见下 |
+| 「重新构建镜像 / 推送到 GITHUB / 构建 release」 | 后端升 **1.2.3**，打 tag `v1.2.3` 并发 GitHub Release（带离线包附件） |
+
+### 1. 批量条常显
+
+原来只在「已选 ≥ 1」时出现，两个实际后果：用户**看不见这里能做什么**
+（批量能力等于不存在）；每勾一行整块列表被撑下去一行、鼠标目标跟着跳，
+连点两行第二下容易点空。
+
+⇒ 恒定占位：未选时按钮 `disabled` + 一行引导，已选再点亮。
+**置灰必须用 `disabled` 属性而不是只加 class** —— 事件层一起挡住，
+不必在每个 handler 里再判一次 `k === 0`。
+
+### 2. ★★ 「读不出内容」必须明确报错（`nebula-webutil-probe.py`）★★
+
+**真因不在 OO、也不在本项目**：文件是 Windows 上的**云端占位文件**
+（OneDrive / Nextcloud 按需同步）——`stat` 报出真实大小（实测 42943），
+`read` 却只拿到 0 字节。WSL 的 drvfs/9p 挂载上连
+`dd if=… of=/dev/null` 都读到 0 字节（同一目录的 `Desktop.ini`、
+D 盘别处的 15MB dwg 都正常）；容器里的 `/mnt/d` 正是把 WSL 的 drvfs
+再 bind 进去 ⇒ 容器内同样读不出。OO 容器日志
+`error downloadFile … ESOCKETTIMEDOUT` 就是这个。
+
+**但产品侧确实有个真 bug**，已修（`app/webutil.py`）：
+
+- 读不出内容时服务端发的是 `HTTP 200` + `Content-Length: N` + **0 字节**；
+  OnlyOffice 转圈约 20 秒后报「下载文件失败」，而服务端只留一条 ASGI 层的
+  `RuntimeError: Response content shorter than Content-Length`
+  —— 看不出是哪个文件、更看不出「是文件读不出来」。排查时被这层假象挡住很久。
+- `probe_readable()` 在**所有取流路径共用的** `_stream_file` 里先探 1 字节，
+  读不到就 **503 + 人话**；空文件（`size == 0`）合法，照旧放行。
+- `/f/<token>` 的探测放在 `shortlink.touch()` **之前**：否则读不出内容的文件
+  会白烧 `max_visits` 配额、访问次数也虚高。
+- ⚠️ **503 不是 404** ⇒ 不触发 `/f` 的惰性自清，链接不会被误删
+  （「读不出来」≠「文件没了」）。两条都有测试守着
+  （`_test_links.py` §15）。
+
+### 3. 部署（NAS）
+
+NAS 侧那两个单文件覆盖挂载**必须摘掉**，否则镜像换了 1.2.3、
+容器里跑的还是旧的 `pages.py` / `shortlink.py`，且健康检查照样绿：
+
+```
+- ./app-overrides/pages.py:/opt/nebula/app/routers/pages.py:ro
+- ./app-overrides/shortlink.py:/opt/nebula/app/shortlink.py:ro
+```
+
+⚠️ 顺序：**先改 compose、再改名宿主机文件**。反过来的话，中间那一刻
+compose 还引用着不存在的文件 ⇒ Docker 会**创建同名目录** ⇒ 容器起不来。
+
+### 归档文件
+
+| 文件 | 内容 |
+|---|---|
+| `nebula-webutil-probe.py` | **本轮新增**：`probe_readable()` + 在 `_stream_file` 里的调用点 |
+| `nebula-shortlink-page-block.py` | 已刷新（1.2.3 版 `pages.py` 的统一链接块，含 `probe_readable` 的调用与 import 提示） |
+| `nebula-shares-compat.py` | 与前一轮相同（`shares.py` 兼容壳未改动） |
