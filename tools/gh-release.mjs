@@ -57,7 +57,7 @@ if (NOTES_FILE) {
 }
 
 // ── 凭据 ───────────────────────────────────────────────────
-const TOKEN = readGithubToken()
+const TOKEN = await readGithubToken()
 
 // ── 仓库 slug（读 .git/config，不开子进程）─────────────────
 function readOriginUrl() {

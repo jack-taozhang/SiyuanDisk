@@ -120,7 +120,7 @@ function parseSlug() {
   return `${m[1]}/${m[2]}`
 }
 
-const TOKEN = readGithubToken()
+const TOKEN = await readGithubToken()
 const SLUG = parseSlug()
 
 async function req(method, path, body) {

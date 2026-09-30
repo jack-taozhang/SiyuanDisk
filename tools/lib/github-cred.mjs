@@ -8,19 +8,21 @@
  * 读取顺序（前者优先）：
  *   1. `GITHUB_TOKEN` / `GH_TOKEN` 环境变量
  *   2. 仓库根的 `.gh-token` 文件（**已 gitignore**，一行纯 token）
- *      —— 本仓库已按此约定放好，发版走这条稳定路径
+ *      —— 走这条稳定路径
  *   3. `git credential fill`（遵从用户配置的 helper，带重试）—— 仅兜底
  *
  * ★ 用 `git credential fill` 而不是直接调某个 helper 可执行文件 ★
  *   前者遵从**用户自己配置的** credential.helper（GCM / store / 其它），
  *   脚本因此不绑定任何本机绝对路径。
  *
- * ★ 第 3 档用 spawnSync 是**不得已**（readGithubToken 必须同步返回）★
- *   本机沙箱下同步族子进程会 EBUSY（见 tools/pack.js 的同类修复），
- *   所以这里用 try/catch 包住：抛不出来就当"没拿到"，继续走失败分支，
- *   绝不让一次环境故障炸掉整个发布流程。
+ * ★★ 本模块**不调用同步族子进程** ★★
+ *   `execSync` / `execFileSync` / `spawnSync` 在本机沙箱**一律 EBUSY**，
+ *   而 `spawnSync` 最阴 —— 它**不抛异常**，只静默返回 `{status:null, error:'EBUSY'}`，
+ *   表现成"凭据助手怎么都不返回" ⇒ 极难定位。
+ *   ⇒ 因此本函数是 **async**，内部走异步 `spawn`。
+ *   （同源修复：tools/pack.js、tools/gh-release.mjs、tools/gh-push-api.mjs）
  */
-import { spawnSync } from "node:child_process"
+import { spawn } from "node:child_process"
 import { existsSync, readFileSync } from "node:fs"
 import { resolve } from "node:path"
 
@@ -44,21 +46,51 @@ function fromFile() {
   return null
 }
 
-function fromCredentialFill(attempts = 4) {
-  for (let i = 1; i <= attempts; i++) {
-    let res
+/** 跑一次 `git credential fill`（异步；任何异常/超时都当作"没拿到"） */
+function credentialFillOnce(timeout = 20000) {
+  return new Promise((resolve_) => {
+    let child
     try {
-      res = spawnSync("git", ["credential", "fill"], {
-        input: "protocol=https\nhost=github.com\n\n",
-        encoding: "utf8",
-        timeout: 20000,
-      })
+      child = spawn("git", ["credential", "fill"], { stdio: ["pipe", "pipe", "ignore"] })
     } catch {
-      return null // 本机沙箱同步族子进程被拦（EBUSY / EPERM）⇒ 当作拿不到
+      resolve_(null)
+      return
     }
-    const line = (res?.stdout || "").split("\n").find((l) => l.startsWith("password="))
-    if (line) {
-      return line.slice("password=".length).trim()
+    const out = []
+    let settled = false
+    const done = (v) => {
+      if (settled) return
+      settled = true
+      clearTimeout(timer)
+      resolve_(v)
+    }
+    const timer = setTimeout(() => {
+      try { child.kill() } catch { /* 忽略 */ }
+      done(null)
+    }, timeout)
+    child.stdout.on("data", (d) => out.push(d))
+    child.on("error", () => done(null))
+    child.on("close", () => {
+      const line = Buffer.concat(out)
+        .toString("utf8")
+        .split("\n")
+        .find((l) => l.startsWith("password="))
+      done(line ? line.slice("password=".length).trim() : null)
+    })
+    try {
+      child.stdin.write("protocol=https\nhost=github.com\n\n")
+      child.stdin.end()
+    } catch {
+      done(null)
+    }
+  })
+}
+
+async function fromCredentialFill(attempts = 3) {
+  for (let i = 1; i <= attempts; i++) {
+    const v = await credentialFillOnce()
+    if (v) {
+      return v
     }
     if (i < attempts) {
       console.log(`  …凭据助手第 ${i} 次未返回，重试`)
@@ -67,7 +99,7 @@ function fromCredentialFill(attempts = 4) {
   return null
 }
 
-export function readGithubToken() {
+export async function readGithubToken() {
   const env = fromEnv()
   if (env) {
     return env
@@ -76,7 +108,7 @@ export function readGithubToken() {
   if (file) {
     return file
   }
-  const filled = fromCredentialFill()
+  const filled = await fromCredentialFill()
   if (filled) {
     console.log(
       `  ⓘ 凭据来自 git credential fill（不稳定）。建议把它存到 ${TOKEN_FILE}（已 gitignore）以走稳定路径。`,
