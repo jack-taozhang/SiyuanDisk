@@ -62,6 +62,17 @@ function makeApi(overrides = {}) {
      */
     browserViewUrl: async () => "http://192.168.193.70:8089/view?x",
     signedRawUrl: async () => "http://192.168.193.70:8089/api/raw?t=x",
+    /**
+     * ★ 永久直链（v2）。桩要能**记下调用参数**，否则测不出
+     *   `external.directLinkUrl(m,p,true)` 有没有把 download 透传下去 ——
+     *   「传了参数但没往下传」是最容易漏、又完全静默的一类缺陷。
+     */
+    directLinkUrl: async (mount, path, opts) => {
+      makeApi.__lastDirect = { mount, path, opts };
+      return opts && opts.download
+        ? "http://192.168.193.70:8089/f/N-MAJI5zBjO2?dl=1"
+        : "http://192.168.193.70:8089/f/N-MAJI5zBjO2";
+    },
     downloadUrl: () => "http://192.168.193.70:8089/api/download?x",
     mkdir: async () => ({ ok: true }),
     rename: async () => ({ ok: true }),
@@ -125,7 +136,9 @@ async function main() {
   const contract = createExternalContract({ API: makeApi(), pickViewer: stubPickViewer, diag: () => {} });
 
   await test("带版本号与标识", async () => {
-    assert.strictEqual(contract.version, 1);
+    // ★ v2（2026-09-30）新增 directLinkUrl（永久短链）——纯增量，
+    //   v1 的方法签名与语义没动，所以判 `>= 2` 的消费方才用得到新方法。
+    assert.strictEqual(contract.version, 2);
     assert.strictEqual(contract.id, "nebuladisk.external");
   });
 
@@ -137,7 +150,7 @@ async function main() {
   await test("承诺的方法全部存在", async () => {
     for (const m of [
       "listMounts", "list", "stat", "search", "viewerKind",
-      "previewUrl", "cadUrl", "webUrl", "signedRawUrl", "downloadUrl", "health",
+      "previewUrl", "cadUrl", "webUrl", "signedRawUrl", "directLinkUrl", "downloadUrl", "health",
       // F-300 新增写操作（让消费方能新建/改名/删除/移动）
       "mkdir", "rename", "remove", "move",
     ]) {
@@ -222,6 +235,7 @@ async function main() {
       ["cadUrl", () => contract.cadUrl("m", "/a.dwg"), "http://192.168.193.70:8089/cad/?target=x"],
       ["webUrl", () => contract.webUrl("m", "/a.pdf", "a.pdf"), "http://192.168.193.70:8089/view?x"],
       ["signedRawUrl", () => contract.signedRawUrl("m", "/a.pdf"), "http://192.168.193.70:8089/api/raw?t=x"],
+      ["directLinkUrl", () => contract.directLinkUrl("m", "/a.jpg"), "http://192.168.193.70:8089/f/N-MAJI5zBjO2"],
       ["downloadUrl", () => contract.downloadUrl("m", "/a.pdf"), "http://192.168.193.70:8089/api/download?x"],
     ];
     for (const [label, run, expected] of cases) {
@@ -247,6 +261,54 @@ async function main() {
     const r = await c.webUrl("m", "/a.pdf", "a.pdf");
     assert.strictEqual(r.ok, true);
     assert.strictEqual(r.data, "http://192.168.193.70:8089/view?async=1");
+    assert.ok(!String(r.data).includes("object Promise"), "不得返回 [object Promise]");
+  });
+
+  /**
+   * ★ v2 新增：永久直链 `directLinkUrl` ★
+   *
+   *   两条断言缺一不可：
+   *     ① **值**：内联 vs 下载拿到不同地址（`?dl=1` 后缀）
+   *     ② **透传**：`download` 必须真的往下传到 `API.directLinkUrl` 的 opts 里
+   *        —— 桩里记了 `__lastDirect`，所以"传了但没往下传"这种静默缺陷会红。
+   *        光看返回值的话，桩自己造 dl 后缀，压根测不出漏传参。
+   */
+  await test("directLinkUrl 透传 download 且返回永久短链", async () => {
+    const inline = await contract.directLinkUrl("m", "/a.jpg");
+    assert.strictEqual(inline.ok, true);
+    assert.strictEqual(inline.data, "http://192.168.193.70:8089/f/N-MAJI5zBjO2");
+    /*
+     * ★ 这里**必须**过 plain() ★
+     *   external.js 跑在 vm 上下文里，它内部构造的 `{ download }` 用的是
+     *   **vm realm 的 Object.prototype**；直接 deepStrictEqual 会报
+     *   「Values have same structure but are not reference-equal」——
+     *   也就是说，看着一模一样的两个对象会因为**原型不同**而判失败。
+     *   （本文件开头的 plain() 就是为这件事准备的，见其上方注释。）
+     */
+    assert.deepStrictEqual(
+      plain(makeApi.__lastDirect),
+      { mount: "m", path: "/a.jpg", opts: { download: false } },
+      "内联时 opts.download 必须是 false（不能 undefined —— 要与插件侧调用同形）"
+    );
+
+    const dl = await contract.directLinkUrl("m", "/a.jpg", true);
+    assert.strictEqual(dl.ok, true);
+    assert.strictEqual(dl.data, "http://192.168.193.70:8089/f/N-MAJI5zBjO2?dl=1");
+    assert.deepStrictEqual(plain(makeApi.__lastDirect), {
+      mount: "m",
+      path: "/a.jpg",
+      opts: { download: true },
+    });
+  });
+
+  await test("directLinkUrl 的 async 退化防护（与 webUrl 同源缺陷）", async () => {
+    const c = createExternalContract({
+      API: makeApi({ directLinkUrl: async () => "http://192.168.193.70:8089/f/async1" }),
+      pickViewer: stubPickViewer,
+    });
+    const r = await c.directLinkUrl("m", "/a.jpg");
+    assert.strictEqual(r.ok, true);
+    assert.strictEqual(r.data, "http://192.168.193.70:8089/f/async1");
     assert.ok(!String(r.data).includes("object Promise"), "不得返回 [object Promise]");
   });
 

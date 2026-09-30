@@ -13,7 +13,7 @@
  *
  *   渲染时思源把块内 .custom-block__content 交给本插件的渲染器，
  *   渲染器把内容替换成一个可交互的目录浏览器，或一个文件预览 iframe。
- *   所有网络请求都复用插件已建立的代理通道（src/proxy.js + src/api.js）。
+ *   所有网络请求都走插件唯一的**直连**通道（src/api.js → 网盘 serverUrl）。
  *
  * ⚠️ 历史 bug（已定位并修复）：
  *   早期实现用 ```` ```nebuladisk ```` 反引号围栏，但**反引号围栏在思源里
@@ -25,14 +25,14 @@
  *   且反引号写法的整个围栏（含 ``` 行）会被原样存进 kramdown。
  *
  * 为什么选「自定义块」而不是挂件（widget）：
- *   · 挂件是独立目录 + 独立 iframe 沙箱，与本插件的代理/登录态隔离，拿不到会话
- *   · 自定义块渲染由本插件进程直接负责，可以复用同一个代理与 cookie jar
+ *   · 挂件是独立目录 + 独立 iframe 沙箱，与本插件的登录态/session 隔离，拿不到会话
+ *   · 自定义块渲染由本插件进程直接负责，可以复用同一个 sessionStorage 里的 token
  *   · 纯文本存储，跨设备同步、导出 Markdown 都不丢内容（最坏情况退化成一段 JSON）
  *
- * ★ 关于 iframe 与代理 ★
- *   代理端口 ≠ 思源端口，所以 iframe 内容仍是跨 origin。
- *   代理已剥离 X-Frame-Options / CSP，并改写内部资源地址为 /nb 前缀，
- *   因此可以正常嵌入显示。
+ * ★ 关于 iframe 与跨源 ★
+ *   网盘端口（8089）≠ 思源端口（6806），所以 iframe 内容仍是跨 origin。
+ *   网盘侧对预览地址**未下发 X-Frame-Options / CSP**（实测），
+ *   且 iframe 直接指向网盘自身（同源于网盘），因此可以正常嵌入显示。
  *
  * ★ 关于编辑冲突 ★
  *   嵌入的是「只读浏览视图」。用户在嵌入内容里做的操作不会同步回笔记；
@@ -44,9 +44,9 @@
 //   「打开网盘」按钮要拼出 NebulaDisk **网页版**的地址。
 //   serverBase() 返回形如 http://192.168.193.70:8089 的**网盘地址**
 //   （来自插件设置 serverUrl）。
-//   ⚠️ 不要用 proxyBase() —— 那是 127.0.0.1:6810 的插件本地代理，
-//      不是网盘界面，网页端/手机端也连不上（任务②修的就是这个）。
-//   ⚠️ 也不要用 location.origin —— 那是思源自己的地址（6806）。
+//   ⚠️ 不要用 location.origin —— 那是思源自己的地址（6806）。
+//      （历史提醒：以前还有个 proxyBase() 指 127.0.0.1:6810 的内置代理，
+//        已于 2026-09-30 整体删除，不再是选项。）
 /**
  * ★ 任务⑧（2026-09-23）：这里增加了 pickViewer 与 decodeSmart ★
  *   resolvePreviewUrl() 原来只按「扩展名数组」自己判 OFFICE / CAD，
@@ -64,6 +64,8 @@
  */
 import { serverBase, webDiskUrl, liteUrl, pickViewer, decodeSmart, displayMountPath } from "./api.js";
 import { typeIconEl, extOf } from "./icons.js";
+import { probeImageUrl, mountBlobImage, imageFailMessage, revokeBlobUrl } from "./media.js";
+import { diag } from "./diag.js";
 
 /**
  * ★ 最近一次「定位插入点」的逐步轨迹 ★
@@ -221,13 +223,13 @@ export function stringifyEmbed(spec) {
  *
  * 注册到 plugin.customBlockRenders[<plugin name>]
  *
- * 说明：目录浏览**不走 iframe**，而是直接调用代理 API 构建 DOM。原因：
+ * 说明：目录浏览**不走 iframe**，而是直接调用网盘 API 构建 DOM。原因：
  *   · 逐层交互需要与父文档通信，用 iframe 反而要多做一层消息桥
  *   · iframe 指向插件自身页面时，又多一层 origin 差异要处理
  * 只有「单个文件的完整预览」才用 iframe（复用 kkFileView 的渲染结果）。
  * ---------------------------------------------------------------------- */
 
-/** 生成一个「目录浏览器」DOM —— 不依赖 iframe，直接调代理 API 列目录 */
+/** 生成一个「目录浏览器」DOM —— 不依赖 iframe，直接调网盘 API 列目录 */
 function renderTreeBrowser(spec, plugin) {
   const wrap = document.createElement("div");
   wrap.className = "nb-embed nb-embed-tree";
@@ -723,9 +725,8 @@ function renderFileEmbed(spec, plugin) {
   toolbar.appendChild(openBtn);
 
   // ★ 任务①：新增「下载」按钮 ★
-  //   必须异步拿**带签名的直链**：
-  //     · 代理通道 ⇒ /api/download（代理持有 jar 会话）
-  //     · 直连通道 ⇒ /api/raw?…&sig=…（跨源拿不到 Cookie，只能靠签名）
+  //   必须异步拿**带签名的直链**：直连下走 /api/raw?…&sig=…
+  //   （跨源拿不到 Cookie，只能靠签名）。
   //   旧代码用同步 downloadUrl()，直连时会拼出 127.0.0.1:6810
   //   ⇒ ERR_CONNECTION_REFUSED（用户报的「下载会报错」）。
   const dlBtn = document.createElement("button");
@@ -799,7 +800,7 @@ function renderFileEmbed(spec, plugin) {
   webBtn.title = "在浏览器中打开 NebulaDisk 网页版，并定位到该文件所在的目录";
   webBtn.onclick = () => {
     // ★ 用 serverBase()：那是**浏览器可达的网盘地址**（http://192.168.193.70:8089）
-    //   绝不能用 proxyBase() —— 那是 127.0.0.1:6810 的插件本地代理。
+    //   （历史：曾误用 proxyBase()，即 127.0.0.1:6810 的内置代理 —— 已删除。）
     let base = "";
     try { base = serverBase(); } catch { /* 忽略 */ }
     if (!base) {
@@ -861,6 +862,23 @@ function renderFileEmbed(spec, plugin) {
   const frameBox = document.createElement("div");
   frameBox.className = "nb-embed-frame-box";
   wrap.appendChild(frameBox);
+
+  /**
+   * 本块自己创建的 blob URL（图片自愈时产生）。
+   *
+   * ★ 为什么不用全局表 ★
+   *   同一篇文档可以同时展开多个嵌入块，各自可能持有 blob。
+   *   用模块级集合统一回收的话，A 块重建会把 B 块正在用的 blob 也 revoke
+   *   ⇒ B 的图突然变裂图。所以只回收「自己造的那些」。
+   */
+  const myBlobs = [];
+  function rememberBlob(u) {
+    if (u) myBlobs.push(String(u));
+    return u;
+  }
+  function releaseMyBlobs() {
+    for (const u of myBlobs.splice(0)) revokeBlobUrl(u);
+  }
 
   /** 当前 iframe（null 表示还没加载） */
   let frame = null;
@@ -962,8 +980,7 @@ function renderFileEmbed(spec, plugin) {
     const native = pickViewer(name);
     if (native === "image" || native === "video" || native === "audio" ||
         native === "pdf" || native === "text") {
-      // 直连通道 ⇒ /api/raw?…&sig=…（跨源拿不到 Cookie，只能靠签名）
-      // 代理通道 ⇒ /api/download?inline=true
+      // 直连下走 /api/raw?…&sig=…（跨源拿不到 Cookie，只能靠签名）
       // inline=true 很关键：否则会带 Content-Disposition: attachment 触发下载
       const url = await plugin.api.signedDownloadUrl(spec.mount, spec.path, true);
       if (!url) throw new Error("后端未返回可用的直链");
@@ -1166,6 +1183,7 @@ html, body { background: #fff !important; }
     state = "idle";
     frame = null;
     releaseBlob();          // ★ 卸载时回收 OO 的 blob URL
+    releaseMyBlobs();       // ★ 一并回收图片自愈用掉的 blob
     // ★ 需求⑤：只要回到「未展开」状态，就从登记表里注销自己 ★
     //   放在这里而不是每个调用点，是为了保证「任何收起路径」都不会漏登记 —— 
     //   漏了会导致登记表里留着一个已经不在 DOM 里的死引用，
@@ -1204,6 +1222,7 @@ html, body { background: #fff !important; }
   function renderError(msg) {
     state = "idle";
     frame = null;
+    releaseMyBlobs();
     frameBox.innerHTML = "";
     frameBox.classList.remove("is-loaded");
     // ★ 任务①：出错时没有可收起的内容 ⇒ 隐藏「收起」★
@@ -1226,24 +1245,96 @@ html, body { background: #fff !important; }
    * @param {"image"|"video"|"audio"|"pdf"|"text"} media
    * @param {string} url 带签名的直链
    */
+  /**
+   * ★ 图片挂载：直链优先，失败复诊 + 自愈 ★（2026-09-30）
+   *
+   * 背景（真机排查结论，完整推理见 src/media.js 顶部注释）：
+   *   嵌入块里图片显示「图片加载失败（签名可能已过期，点「收起」后重新展开即可）」，
+   *   但同一条直链在真机上被三种方式验证**全部成功**：
+   *     curl 直取 / 页面里 new Image() / --disable-web-security 下再跑一遍
+   *   ⇒ 链接和后端都没问题，失败只发生在 `img` 这一层；
+   *     而旧代码一触发 onerror 就立刻清屏、把原因一律写成「签名过期」，
+   *     既可能是误报，也把真正的失败原因盖掉了。
+   *
+   * 现在分三步：
+   *   ① 元素已被移除（收起 / 块被重建导致的中断）⇒ 静默忽略，不报错
+   *   ② fetch 复诊同一条直链 ⇒ 拿到字节就转 blob 挂回去（**自愈**）
+   *   ③ 复诊也不行 ⇒ 再试认证兜底链路 `/api/download` + Bearer
+   *      （它认 token、不认 URL 签名，与直链互为备份）
+   *      两条都不行才报错，且写出**真实状态码 / 原因**
+   */
+  function attachImage(url) {
+    const img = document.createElement("img");
+    img.className = "nb-embed-image";
+    img.alt = spec.name || spec.path || "图片";
+    // ★ 不接 renderError：图片失败时应保留工具栏，
+    //   让用户还能点「下载」或「在页签中打开」自救。
+    img.onerror = () => {
+      // 元素已脱离文档 ⇒ 这是收起/重建造成的加载中断，不是真失败
+      if (!img.isConnected) return;
+      void recoverImage(img, url);
+    };
+    img.src = url;
+    frameBox.appendChild(img);
+  }
+
+  /**
+   * 图片加载失败的复诊与自愈（见 attachImage 的说明）。
+   *
+   * @param {HTMLImageElement} img 触发 error 的那个元素
+   * @param {string} url 它加载失败的地址（签名直链）
+   */
+  async function recoverImage(img, url) {
+    diag(`[embed] 图片 onerror，开始复诊：${url}`);
+    const probe = await probeImageUrl(url, "embed 图片");
+    diag(`[embed] 图片复诊（签名直链）：${probe.detail}`);
+
+    // ② 直链其实取得到 ⇒ 转 blob 挂回去
+    if (probe.ok && probe.blob) {
+      const next = mountBlobImage(img, probe.blob, "nb-embed-image", img.alt);
+      rememberBlob(next.dataset.nbBlob);
+      // 兜底元素的 onerror **绝不再复诊**，否则会无限递归
+      next.onerror = () => diag("[embed] 图片自愈后仍失败（blob 无法解码）");
+      diag(`[embed] 图片自愈成功（签名直链 → blob，${probe.bytes} 字节）`);
+      return;
+    }
+
+    // ③ 认证兜底链路：/api/download 认 Bearer，不依赖 URL 签名
+    let apiErr = "";
+    try {
+      const blob = await plugin.api.downloadBlob(spec.mount, spec.path, true);
+      const next = mountBlobImage(img, blob, "nb-embed-image", img.alt);
+      rememberBlob(next.dataset.nbBlob);
+      next.onerror = () => diag("[embed] 图片自愈后仍失败（blob 无法解码）");
+      diag(`[embed] 图片自愈成功（认证兜底 /api/download，${blob.size} 字节）`);
+      return;
+    } catch (e) {
+      apiErr = (e && e.message) || String(e);
+      diag(`[embed] 图片认证兜底也失败：${apiErr}`);
+    }
+
+    // ④ 两条链路都不通 ⇒ 给出可照着排查的提示（不再说「签名可能已过期」）
+    const msg = imageFailMessage(
+      { ...probe, detail: probe.detail + (apiErr ? `；认证链路：${apiErr}` : "") },
+      { viaApi: true },
+    );
+    diag(`[embed] 图片加载最终失败：${msg}`);
+    // 复诊期间用户可能已经点了「收起」⇒ 别再动 DOM
+    if (!img.isConnected) return;
+    frameBox.innerHTML = "";
+    const box = document.createElement("div");
+    box.className = "nb-embed-error";
+    box.textContent = msg;
+    frameBox.appendChild(box);
+  }
+
   function renderNative(media, url) {
     frameBox.innerHTML = "";
+    // 上一轮的图片 blob（若有）在这里回收，避免反复展开堆积内存
+    releaseMyBlobs();
 
     if (media === "image") {
-      const img = document.createElement("img");
-      img.className = "nb-embed-image";
-      img.alt = spec.name || spec.path || "图片";
-      // ★ 不设 onerror 到 renderError：图片 404 时应保留工具栏，
-      //   让用户还能点「下载」或「在页签中打开」自救。
-      img.onerror = () => {
-        frameBox.innerHTML = "";
-        const box = document.createElement("div");
-        box.className = "nb-embed-error";
-        box.textContent = "图片加载失败（签名可能已过期，点「收起」后重新展开即可）";
-        frameBox.appendChild(box);
-      };
-      img.src = url;
-      frameBox.appendChild(img);
+      attachImage(url);
       return;
     }
 
@@ -2381,20 +2472,79 @@ export function registerEmbed(plugin) {
         return;
       }
 
-      // 通道未就绪时给出可点击的提示
-      const st = plugin.boot ? plugin.boot.status : { ok: false, detail: "未初始化" };
-      if (!st.ok) {
+      /* ★★ 就绪判据 = 「有没有一条能走到后端的路」★★
+       *   （2026-09-30 的真 bug 修复）
+       *
+       *   原先这里直接读 `plugin.boot.status.ok`，那是**内置代理**的启动状态。
+       *   于是「配了可直连的地址、但代理没起来（或被用户关掉）」时，
+       *   嵌入块**直接拒绝渲染**，显示:
+       *     网盘通道未就绪：代理未启动。请在插件设置中检查后重新打开本文档。
+       *   而同一时刻直连完全正常（/healthz 200、/api/list 也拿得到）。
+       *
+       *   现在内置代理已整体删除，判据只剩一条：**配了 serverUrl 没有**。
+       *   请求真通不通由请求本身回答（失败会带可读原因），不再靠猜。
+       *
+       *   ★ 还有一层时序 ★
+       *     自动登录是异步的；文档里的嵌入块可能在这之前就渲染
+       *     ⇒ 必须容忍「还在连接中」，等引导结束后再决定是渲染还是报错 ——
+       *     否则每篇含嵌入块的文档在打开瞬间都会闪一句「通道未就绪」。
+       */
+      const readyNow = () => {
+        try {
+          if (typeof plugin.channelReady === "function") return Boolean(plugin.channelReady());
+        } catch { /* 判据异常时按未就绪处理，走占位/提示分支 */ }
+        return false;
+      };
+
+      const statusDetail = () =>
+        "未配置网盘地址（请在插件设置里填写网盘地址，例如 http://192.168.193.70:8089）";
+
+      const renderBody = () => {
+        element.innerHTML = "";
+        element.classList.add("nb-embed-host");
+        element.appendChild(
+          spec.kind === "file"
+            ? renderFileEmbed(spec, plugin)
+            : renderTreeBrowser(spec, plugin)
+        );
+      };
+
+      const renderNotReady = (detail) => {
+        element.innerHTML = "";
+        element.classList.add("nb-embed-host");
         const warn = document.createElement("div");
         warn.className = "nb-embed-error";
-        warn.textContent = `网盘通道未就绪：${st.detail}。请在插件设置中检查后重新打开本文档。`;
+        warn.textContent = `网盘通道未就绪：${detail}。请在插件设置中检查后重新打开本文档。`;
         element.appendChild(warn);
+      };
+
+      if (readyNow()) {
+        renderBody();
         return;
       }
 
-      const node = spec.kind === "file"
-        ? renderFileEmbed(spec, plugin)
-        : renderTreeBrowser(spec, plugin);
-      element.appendChild(node);
+      // 尚未就绪：可能只是「引导还在跑」，也可能是真的没配置 —— 先占位再定夺
+      const pending = plugin.bootReady;
+      if (pending && typeof pending.then === "function") {
+        element.innerHTML = "";
+        element.classList.add("nb-embed-host");
+        const loading = document.createElement("div");
+        loading.className = "nb-embed-loading";
+        loading.textContent = "正在连接网盘…";
+        element.appendChild(loading);
+        Promise.resolve(pending)
+          .then(() => {
+            if (!element.isConnected) return;   // 块已销毁 / 文档已切换
+            if (readyNow()) renderBody();
+            else renderNotReady(statusDetail());
+          })
+          .catch(() => {
+            if (element.isConnected) renderNotReady("通道初始化异常");
+          });
+        return;
+      }
+
+      renderNotReady(statusDetail());
     },
   };
 

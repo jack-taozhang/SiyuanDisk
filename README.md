@@ -131,26 +131,34 @@ For Docker-deployed SiYuan, the path inside the container is typically
 
 ---
 
-## Why a local network channel is required
+## Networking: direct connection only
 
-SiYuan (`:6806`) and NebulaDisk (`:8089`) are different origins, and NebulaDisk:
+SiYuan (`:6806`) and NebulaDisk (`:8089`) are different origins. NebulaDisk serves the API with
+permissive CORS (`allow_origins=["*"]`, `allow_credentials=False`) and hands out a **Bearer token**
+at `POST /api/login`, so the plugin talks to it **directly**:
 
-- has **no CORS middleware**, so a cross-origin `fetch` from the webview cannot read the response;
-- issues its session cookie as **`SameSite=lax`**, so it is never sent on cross-site requests.
+```
+plugin (renderer) ──fetch──────────────────────────► NebulaDisk :8089
+                   Authorization: Bearer <token>
+```
 
-The plugin therefore runs a tiny HTTP forwarder on `127.0.0.1:6810` (`src/proxy.js`) which:
+No local forwarder, no port, no second process — nothing that can be down while the drive is up.
 
-1. **keeps the session cookie itself** (captures `Set-Cookie`, replays it) — sidestepping both
-   `SameSite` and the need to add CORS headers to NebulaDisk;
-2. only forwards an explicit **allow-list** of path prefixes, so it cannot be abused as an open proxy;
-3. strips `X-Frame-Options`/CSP and rewrites asset URLs so kkFileView and cad-viewer pages
-   can be framed and can load their own JS/CSS.
+> **Removed in 2026-09-30**: an earlier version ran a tiny HTTP forwarder on `127.0.0.1:6810`
+> (`src/proxy.js`) to work around the drive having no CORS headers. It kept the session cookie,
+> enforced a path allow-list, and rewrote preview HTML asset URLs. It was removed because the
+> direct channel is sufficient, and because its *startup status* had been (incorrectly) used as
+> the "channel ready" signal — so embedded file blocks refused to render with
+> "proxy not started" even when direct requests worked fine. See `git log` for `src/proxy.js`.
 
-Binding to `127.0.0.1` is sufficient because plugin JS always runs **inside the SiYuan process**,
-whether SiYuan runs on the host or in a container.
+Cross-origin caveats that still apply:
 
-If SiYuan's renderer has `nodeIntegration` disabled, the settings panel offers an equivalent
-**JS snippet** you can paste into *Settings → Appearance → Code Snippet → JS*.
+- The session is a **Bearer token stored in `sessionStorage`**, not a cookie (the drive's cookie is
+  `SameSite=lax` and is never sent cross-site anyway).
+- Preview URLs are signature-based (`/api/raw/...?exp=…&sig=…`), so `<img>`/`<video>`/`<a download>`
+  work without cookies, and support HTTP Range (seekable video).
+- URLs returned by the drive may use a **container-internal hostname** (e.g. `nebula:8088`);
+  `browserReachableUrl()` rewrites the host to the configured `serverUrl`.
 
 ---
 
@@ -173,9 +181,9 @@ If SiYuan's renderer has `nodeIntegration` disabled, the settings panel offers a
 
 ```bash
 node test/syntax.check.js   # syntax + import targets + export matching + manifest
-node test/proxy.test.js     # 22 proxy assertions
 node test/embed.test.js     # embed block parsing
-node tools/run-all-tests.cjs  # everything (21 suites, incl. reverse-injection tests)
+node test/e2e.test.js       # end-to-end against a mock drive (direct channel)
+node tools/run-all-tests.cjs  # everything (incl. reverse-injection tests)
 npm test                    # the core three
 ```
 

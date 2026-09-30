@@ -1,25 +1,17 @@
 /* ==========================================================================
  * NebulaDisk API 客户端（浏览器侧）
  * --------------------------------------------------------------------------
- * ★★ 双通道传输 ★★
+ * ★★ 单通道：直连（2026-09-30 起）★★
  *
- * 有两条路可以到达网盘后端，运行时自动选择：
+ *   直接 fetch `http://<网盘>:8089/api/...`，带上 `Authorization: Bearer <token>`。
+ *   前提是后端开了 CORS（后端 `.env` 的 `NB_CORS_ORIGINS=*`，
+ *   注意与 `allow_credentials=False` 配套 —— 所以只能用 Bearer，不能靠 Cookie）。
  *
- *  ① 直连通道（首选）
- *     直接 fetch `http://<网盘>:8089/api/...`。
- *     前提是后端开了 CORS（NEBULA_CORS_ORIGINS）并且调用方带
- *     `Authorization: Bearer <token>`。
- *     优点：不依赖任何本地进程，网页端、手机端、Docker 版思源都能用。
- *
- *  ② 本地代理通道（兜底）
- *     插件在思源进程内起一个 Node HTTP 服务（默认 127.0.0.1:6810），
- *     由它代为请求后端（服务端之间没有同源策略），再把结果加 CORS 头回传。
- *     用途：后端还没升级到带 CORS 的版本时的兼容路径，
- *           以及需要「服务端 Cookie 会话」而不想管理 token 的场景。
- *
- * 选择逻辑见 pickChannel()：**先探测直连，能用就一直用**；
- * 直连不可用（后端没开 CORS / 网络不通）才回落到代理。
- * 探测结果缓存在 sessionStorage，避免每次请求都试错。
+ *   ★ 为什么不再有第二条路 ★
+ *     历史上还有个「本地代理」（插件在思源进程里起 127.0.0.1:6810 转发）用于
+ *     后端未开 CORS 的场合。现已**整体删除**：后端开了 CORS 之后它是纯增的
+ *     失败面（会死、会占端口、会被缓存），而且它的启动状态曾被误当作
+ *     「通道就绪」的判据，导致直连可用时嵌入块却拒绝渲染。
  *
  * 与后端契约的对应关系（读自 nebula/app/routers/）：
  *   POST /api/login   Form(username,password) → {ok,username,display,isAdmin,token}
@@ -34,37 +26,13 @@
  *   GET  /api/download?mount=&path=&inline=     → 二进制
  * ========================================================================== */
 
-import { diag, HAS_NODE } from "./proxy.js";
-
-/** 代理默认端口（与 index.js 的 DEFAULT_SETTINGS.proxyPort 一致） */
-const DEFAULT_PROXY_PORT = 6810;
-
-/**
- * 当前环境有没有 node 能力（即「本地代理」这条路究竟存不存在）。
- *
- * ★ 意义 ★
- *   浏览器端思源（NAS / Docker / 网页版）没有 node ⇒ 进程内代理**永远起不来**。
- *   这种情况下**绝不能**回退代理，否则每次请求都变成
- *   `POST http://127.0.0.1:6810/… net::ERR_CONNECTION_REFUSED`，
- *   用户看到满屏报错，而实际上直连是好的。
- */
-export function hasNode() {
-  try {
-    const inst = window.__nebuladiskPlugin;
-    // 插件把探测结果放在 boot.noNode 上（index.js startInline 里设置）
-    if (inst && inst.boot && inst.boot.noNode) return false;
-  } catch { /* ignore */ }
-  return HAS_NODE;
-}
-
-/** 直连通道的探测结果缓存键（放在 sessionStorage，刷新页面后重探） */
-const CHANNEL_KEY = "nebuladisk.channel";
+import { diag } from "./diag.js";
 
 /**
  * 后端服务器地址 —— 形如 `http://192.168.193.70:8089`。
  *
- * 来源优先级：插件设置 serverUrl → 空。
- * 空表示「没有直连目标」，此时只能用代理通道。
+ * 来源：插件设置 `serverUrl`。**空 = 没有可用的路**（会给出明确提示，
+ * 见 resolveUrl / API.me 的错误处理），不再有「回退到代理」这一说。
  */
 export function serverBase() {
   try {
@@ -187,32 +155,43 @@ export function liteUrl(base, target, kind) {
   return root + "/lite?kind=" + k + "&target=" + encodeURIComponent(rel);
 }
 
+/* -------------------------------------------------------------------------
+ * ★★ 单通道：只有直连（2026-09-30 起）★★
+ *
+ * 内置代理（曾经的 127.0.0.1:6810）与整套「探测 → 选择 → 缓存 → 重试」逻辑
+ * 已**整体删除**。理由：
+ *   · 后端已开 CORS + Bearer token，直连端到端可用（桌面端 / NAS / Docker 一样）
+ *   · 代理是个会死、会占端口、会被复用的进程，属于**纯增的失败面**
+ *   · 它的启动状态还曾被误当成「通道就绪」的判据，导致嵌入块在直连可用时
+ *     拒绝渲染（用户看到「网盘通道未就绪：代理未启动」）
+ *
+ * 现在：请求地址、预览 iframe 地址、下载直链**恒为 `serverBase()`**。
+ * 没有第二条路，也就没有「选错路」这种事。
+ * ---------------------------------------------------------------------- */
+
 /**
- * 代理基点 —— 形如 `http://127.0.0.1:6810`。
+ * 兼容壳 —— 已废弃，恒为 `"direct"`。
  *
- * 端口来源（按优先级）：
- *   ① 插件实例上解析出来的实际端口（可能是内嵌代理，也可能是复用到的外部代理）
- *   ② 插件设置里的 proxyPort
- *   ③ 默认 6810
- *
- * 注意：**不能用 location.origin** —— 那是思源的地址，不是代理的地址。
+ * 保留是因为 tree.js / viewer.js / 外部脚本仍在调用；
+ * 直接删掉符号会让它们静默抛 ReferenceError（而异常多发生在回调里，
+ * 表现为「点了没反应」，极难排查）。**不要再新增调用点。**
  */
-export function proxyBase() {
-  let port = DEFAULT_PROXY_PORT;
-  try {
-    const inst = window.__nebuladiskPlugin;
-    if (inst) {
-      const boot = inst.boot;
-      if (boot) {
-        const p = boot.externalPort || boot.actualPort;
-        if (p) port = Number(p);
-      }
-      if (!port && inst.settings && inst.settings.proxyPort) {
-        port = Number(inst.settings.proxyPort);
-      }
-    }
-  } catch { /* 拿不到就用默认 */ }
-  return `http://127.0.0.1:${port}`;
+export function currentKind() {
+  return "direct";
+}
+
+/** 兼容壳 —— 已废弃，恒为 `"direct"`（异步版）。 */
+export function currentKindAsync() {
+  return Promise.resolve("direct");
+}
+
+/**
+ * 兼容壳 —— 已废弃。
+ *
+ * 以前用来作废「通道探测缓存」；现在没有缓存可作废，保留空实现。
+ */
+export function resetChannel() {
+  /* no-op：单通道后没有需要失效的探测结论 */
 }
 
 /* -------------------------------------------------------------------------
@@ -235,144 +214,23 @@ export function setToken(t) {
   } catch { /* 隐私模式下 sessionStorage 可能不可用，忽略 */ }
 }
 
-/**
- * 当前使用的通道：`"direct"` 或 `"proxy"`。
- *
- * ★ 为什么要缓存 ★
- *   探测要发一次真实请求。如果每次 API 调用都先探测，请求量会翻倍，
- *   而且失败时会有明显延迟。缓存到 sessionStorage 后，一次会话只探一次。
- *   但要注意：**用户改了 serverUrl 就必须重探**，所以缓存里带上 URL，
- *   不一致就作废（见 pickChannel）。
- */
-let channelMemo = null;   // { base: string, kind: "direct"|"proxy" }
-
-export function resetChannel() {
-  channelMemo = null;
-  try { sessionStorage.removeItem(CHANNEL_KEY); } catch { /* ignore */ }
-}
-
-/** 读缓存（同一次会话、同一个 serverUrl 才复用） */
-function cachedChannel(base) {
-  if (channelMemo && channelMemo.base === base) return channelMemo.kind;
-  try {
-    const raw = sessionStorage.getItem(CHANNEL_KEY);
-    if (!raw) return null;
-    const o = JSON.parse(raw);
-    if (o && o.base === base && (o.kind === "direct" || o.kind === "proxy")) {
-      channelMemo = o;
-      return o.kind;
-    }
-  } catch { /* ignore */ }
-  return null;
-}
-
-function saveChannel(base, kind) {
-  channelMemo = { base, kind };
-  try { sessionStorage.setItem(CHANNEL_KEY, JSON.stringify(channelMemo)); } catch { /* ignore */ }
-}
-
-/**
- * 探测直连通道是否可用。
- *
- * ★ 判据（2026-09 修正）★
- *   对 /healthz 发一次带 `Accept` 头的跨域 GET：
- *   - **只要 fetch 没抛异常，就说明直连可用** —— 真被 CORS 拦时 fetch 会抛
- *     TypeError，压根走不到 `then`。所以"没抛错"本身已是充分证据。
- *   - `access-control-allow-origin` 只当**日志参考**，不再作为唯一判据。
- *
- * ★ 为什么以前会误判 ★（务必看完，这是 2026-09 那次线上故障的根因）
- *   Starlette/FastAPI 的 `CORSMiddleware` **只在请求带 `Origin` 头时才回 ACAO**。
- *   一个不带自定义头的简单 GET 浏览器不会替我们加 `Origin`，
- *   于是响应里 ACAO 恒为 `(无)` ⇒ 误判直连不可用 ⇒ 回退本地代理。
- *   而在**浏览器端思源**（NAS / Docker）压根没有代理进程，
- *   结果就是满屏 `POST http://127.0.0.1:6810/… net::ERR_CONNECTION_REFUSED`。
- */
-async function probeDirect(base, timeoutMs = 2500) {
-  if (!base) return false;
-  const ctl = typeof AbortController !== "undefined" ? new AbortController() : null;
-  const timer = ctl ? setTimeout(() => ctl.abort(), timeoutMs) : null;
-  try {
-    // ★★★ 关键：必须显式带上 Origin 头，否则探测结论是错的 ★★★
-    //
-    //   Starlette/FastAPI 的 CORSMiddleware **只在请求带 Origin 时**才回
-    //   access-control-allow-origin。而一个不带自定义头的简单 GET，
-    //   浏览器是**不会**替你加 Origin 的（只有跨域非简单请求才加）。
-    //
-    //   后果（真实踩过）：不显式带 Origin 时响应里 ACAO 恒为「(无)」，
-    //   探测误判「直连不可用」→ 回退代理 → 浏览器端没有代理 →
-    //   满屏 ERR_CONNECTION_REFUSED，而直连其实是好的。
-    //
-    //   显式设 Origin 后，该请求变成「非简单请求」的等价形态，
-    //   浏览器会发 Origin 并校验响应，ACAO 也就可读了。
-    const r = await fetch(base + "/healthz", {
-      method: "GET",
-      mode: "cors",
-      credentials: "omit",
-      signal: ctl ? ctl.signal : undefined,
-      // Accept 自定义头本身就会触发预检，Origin 也随之上送
-      headers: { Accept: "application/json" },
-    });
-    const acao = r.headers.get("access-control-allow-origin");
-    // ★ 判定放宽：能拿到响应体 = CORS 已经放行 ★
-    //   若真被 CORS 拦，fetch 会抛 TypeError，压根走不到这里。
-    //   所以「请求没抛错」本身就是直连可用的充分证据；
-    //   ACAO 只作为日志参考，不再作为唯一判据。
-    const ok = r.ok || !!acao;
-    diag(`[channel] 直连探测 ${base}/healthz → ${r.status} ACAO=${acao || "(无)"} ⇒ ${ok ? "直连可用" : "直连不可用"}`);
-    return ok;
-  } catch (e) {
-    diag(`[channel] 直连探测失败（${e && e.name}: ${e && e.message}）`);
-    return false;
-  } finally {
-    if (timer) clearTimeout(timer);
-  }
-}
-
-/**
- * 决定本次使用哪条通道。
- * @returns {Promise<"direct"|"proxy">}
- */
-async function pickChannel() {
-  const base = serverBase();
-
-  // ★ 第一优先：没有 node 能力 ⇒ 本地代理这条路根本不存在 ★
-  //   直接锁定直连，连探测都省了（探测再准也没别的选项）。
-  //   必须放在 cachedChannel 之前，否则旧的错误缓存会继续把我们带向代理。
-  if (!hasNode()) {
-    if (!base) {
-      diag("[channel] ⚠ 当前环境无 node 能力（无法用本地代理），但也没配置后端地址 ⇒ 通道不可用");
-      return "direct";
-    }
-    saveChannel(base, "direct");       // 顺手把缓存修正过来
-    diag(`[channel] 无 node 能力 ⇒ 强制直连通道：${base}`);
-    return "direct";
-  }
-
-  if (!base) return "proxy";           // 有 node 但没配地址，只能靠代理
-  const hit = cachedChannel(base);
-  if (hit) return hit;
-  const ok = await probeDirect(base);
-  const kind = ok ? "direct" : "proxy";
-  saveChannel(base, kind);
-  if (ok) diag(`[channel] 采用直连通道：${base}`);
-  else diag(`[channel] 采用本地代理通道（直连不可用）`);
-  return kind;
-}
+/* 通道缓存 / 探测（probeDirect / pickChannel / cachedChannel / saveChannel）
+ * 已随内置代理一并删除 —— 单通道后没有可探测、可缓存的东西。
+ * 「路通不通」的判断改为**按需告知**：设置面板的「通道自检」按钮会真的
+ * 打一次 /healthz 并把结果摆给用户看，比后台悄悄探测更诚实。 */
 
 /**
  * 把后端返回的相对路径补成可访问的绝对 URL。
  *
- * ★ 两通道的基址不同 ★
- *   直连：基址 = serverUrl（http://192.168.193.70:8089）
- *   代理：基址 = proxyBase()（http://127.0.0.1:6810）
- *   同一个 `/preview/onlinePreview?...` 在两条通道下要拼出不同的绝对地址。
- *   预览 iframe 的 src、下载链接都用这里的结果。
+ * 基址恒为 `serverBase()`（网盘地址）。后端返回的多半是
+ * `/preview/onlinePreview?...` 这类**根路径相对地址**，必须补成绝对地址才能
+ * 交给 iframe / <img> / <video>。
  */
 export function fixUrl(u) {
   if (!u) return "";
   const s = String(u);
   if (/^https?:\/\//i.test(s)) return s;   // 已是绝对地址
-  const base = currentKind() === "direct" ? serverBase() : proxyBase();
+  const base = serverBase();
   if (!base) return s;
   if (s.startsWith(base)) return s;
   return base + (s.startsWith("/") ? s : "/" + s);
@@ -386,7 +244,7 @@ export function fixUrl(u) {
  *   fixUrl()  只负责「相对 → 绝对」，对已经是绝对地址的串原样返回。
  *   browserReachableUrl() 负责「容器内主机名 → 浏览器可达主机名」，
  *   即把 `http://nebula:8088/...` 这类**只在 docker 网络里可解析**的地址
- *   换成当前通道的基点。
+ *   换成网盘地址（serverBase()）。
  *
  *   两个函数是**互补**的，不能互相替代：
  *     · 相对路径（/preview/...）      → fixUrl 就够
@@ -407,7 +265,7 @@ export function browserReachableUrl(u) {
   const abs = fixUrl(s);
   if (!/^https?:\/\//i.test(abs)) return abs;
 
-  const base = currentKind() === "direct" ? serverBase() : proxyBase();
+  const base = serverBase();
   if (!base) return abs;
 
   // 同源 ⇒ 已经是对的
@@ -430,31 +288,41 @@ export function browserReachableUrl(u) {
   return uu.toString();
 }
 
-/** 同步读当前通道（渲染时用；未探测过时按「有 serverUrl 就直连」乐观估计）*/
-export function currentKind() {
-  const base = serverBase();
-  // ★ 无 node 能力 ⇒ 只可能是直连 ★
-  //   必须放在读缓存之前：否则会话里一旦存过错误的 "proxy"，
-  //   所有 iframe src / 下载链接都会被拼成 127.0.0.1:6810。
-  if (!hasNode()) return "direct";
-  if (!base) return "proxy";
-  if (channelMemo && channelMemo.base === base) return channelMemo.kind;
-  try {
-    const raw = sessionStorage.getItem(CHANNEL_KEY);
-    if (raw) {
-      const o = JSON.parse(raw);
-      if (o && o.base === base) return o.kind;
-    }
-  } catch { /* ignore */ }
-  return "direct";
-}
-
 /**
- * 异步取当前通道 —— 必要时会真的发一次探测请求。
- * 「测试连接」按钮用它，因为它需要拿到**准确**结果而不是乐观估计。
+ * 给**短链**补上下载标记（`?dl=1`）—— 打开型 / 下载型两个入口共用一条短链。
+ *
+ * ★★★ 为什么短链可以前端拼、而签名直链绝对不行 ★★★
+ *
+ *   两条通道的「凭证」位置完全不同：
+ *
+ *     · `/api/raw/…?mount=..&path=..&exp=..&sig=..`
+ *         凭证 = `sig`，而 **`dl` 并入了 HMAC 输入**
+ *         （网盘 `webutil._raw_token(..., dl=)`）。
+ *         ⇒ 前端给 URL 手加 `&dl=1` 会让 sig 与实参不匹配 ⇒ **恒 403**。
+ *         （这一点已实测，见 `routers/rawlink.py` 的 `_wants_download`。）
+ *
+ *     · `/f/<token>`
+ *         凭证 = **token 本身**，它在路径里、且不覆盖查询串。
+ *         `dl` 是**请求时**读的参数（`short_open(token, request, dl="")`）
+ *         ⇒ 前端拼 `?dl=1` 完全合法，服务端按它决定 attachment / inline。
+ *
+ *   ⇒ 所以「先拿短链、再按需拼 dl」是安全的；而且**同一条短链**
+ *     既能内联打开、又能强制下载，这才让两个「复制直链」入口
+ *     的地址从「两条 330 字符、sig 各不相同」收敛成
+ *     「同一条 41 字符，只差一个 `?dl=1`」。
+ *
+ * ★ 幂等 ★ 已经带了 `dl=` 就不重复拼（免得手滑拼成 `?dl=1&dl=1`）。
+ *
+ * @param {string} url 短链地址（通常形如 `http://host:8089/f/xxxxxxxxxxxx`）
+ * @param {boolean} download true ⇒ 追加 `?dl=1`
+ * @returns {string}
  */
-export function currentKindAsync() {
-  return pickChannel();
+export function withDl(url, download) {
+  const s = String(url || "");
+  if (!s) return "";
+  if (!download) return s;
+  if (/[?&]dl=/i.test(s)) return s;
+  return s + (s.indexOf("?") >= 0 ? "&" : "?") + "dl=1";
 }
 
 export class ApiError extends Error {
@@ -462,7 +330,13 @@ export class ApiError extends Error {
     super(message);
     this.name = "ApiError";
     this.status = status;
-    /** kind: api | network | proxy | auth */
+    /**
+     * 错误分类，供界面决定怎么提示：
+     *   api      —— 后端明确返回的业务错误（4xx/5xx 且带 detail）
+     *   network  —— 请求根本没发出去 / 连不上（fetch 抛错）
+     *   config   —— 本机配置就缺东西（例如没填网盘地址）
+     *   auth     —— 401，需要重新登录
+     */
     this.kind = kind;
   }
 }
@@ -527,9 +401,8 @@ async function parse(resp, reqPath = "") {
       (data && (data.detail || data.error || data.message)) ||
       (typeof data === "string" && data.trim() ? data.trim().slice(0, 300) : "") ||
       `请求失败 (HTTP ${resp.status})`;
-    // 502/403 来自本地代理本身，归为 proxy 类，便于界面给出不同提示
-    const kind = resp.status === 502 || resp.status === 403 ? "proxy" : "api";
-    throw new ApiError(detail, resp.status, kind);
+    // 403/502 现在都只可能是后端（或中间的反代）给的，统一按业务错误上报
+    throw new ApiError(detail, resp.status, "api");
   }
   return data;
 }
@@ -600,83 +473,67 @@ function withInline(url, inline) {
 const inflight = new Map();
 
 /**
- * 给请求补上跨域直连所需的头。
+ * 给请求补上跨域所需的头。
  *
- * ★ 只在直连通道下加 ★
- *   代理通道下代理自己持有服务端 Cookie，不需要也不应该看到 token。
+ * 后端是 `allow_origins=["*"] + allow_credentials=False` ⇒ 浏览器不会带上
+ * Cookie（这是刻意的，避免全员 CSRF），所以**会话只能靠 Bearer token**。
  */
-function authHeaders(kind) {
+function authHeaders() {
   const h = { Accept: "application/json" };
-  if (kind === "direct") {
-    const t = getToken();
-    if (t) h.Authorization = `Bearer ${t}`;
-  }
+  const t = getToken();
+  if (t) h.Authorization = `Bearer ${t}`;
   return h;
 }
 
 /**
- * 按当前通道拼出请求 URL。
- * 直连：http://<网盘>:8089/api/list?...
- * 代理：http://127.0.0.1:6810/api/list?...
+ * 拼出请求 URL —— 恒为「网盘地址 + 路径」。
+ *
+ * ★ 没有地址时必须**明确报错**，不能拼出 "/api/xxx" 这种相对地址 ★
+ *   相对地址会被浏览器打到**思源自己的 origin**（:6806），
+ *   拿到的是思源的 404 页面 —— 看起来像「网盘接口坏了」，实际是没配地址。
  */
 async function resolveUrl(path) {
-  const kind = await pickChannel();
-  const base = kind === "direct" ? serverBase() : proxyBase();
-  return { url: base + path, kind };
+  const base = serverBase();
+  if (!base) {
+    throw new ApiError(
+      "未配置网盘地址。请在「NebulaDisk 网盘设置」里填写网盘地址，例如 http://192.168.193.70:8089",
+      0,
+      "config",
+    );
+  }
+  return base + path;
 }
 
 /**
- * 一次请求 + 自动处理「直连通道失效」。
+ * 一次请求。
  *
- * ★ 为什么要重试 ★
- *   通道探测发生在会话开始时，但 token 可能过期、后端可能重启、
- *   用户可能改了 serverUrl —— 这些都会让已缓存的 "direct" 失效。
- *   收到网络错误或 401 时清掉通道缓存重探一次：
- *     直连挂了 → 若代理可用，这次请求还能成功；
- *     代理也没了 → 抛出真实错误。
- *   只重试一次，避免死循环。
+ * ★ 为什么不再有「失败后重试一次」★
+ *   以前有两条通道可切换，所以失败时要重探、换条路重试。
+ *   现在只有一条路 —— 失败就是真失败，重试同样的请求只会让用户多等一次，
+ *   还会把「网络不通」这类问题掩盖成「偶尔慢」。直接抛出真实错误更有用。
+ *   （幂等性也无法保证：POST 重试可能造成重复提交。）
  */
-async function requestOnce(method, path, { params, bodyKind, onProgress } = {}) {
-  const { url, kind } = await resolveUrl(path + (params ? qs(params) : ""));
-  let resp;
+async function requestOnce(method, path, { params, bodyKind } = {}) {
+  const url = await resolveUrl(path + (params ? qs(params) : ""));
   try {
-    const init = { method, credentials: "omit", headers: authHeaders(kind) };
+    const init = { method, credentials: "omit", headers: authHeaders() };
     if (bodyKind) init.body = bodyKind;
-    resp = await fetch(url, init);
+    return await fetch(url, init);
   } catch (e) {
-    const target = kind === "direct" ? `网盘（${serverBase()}）` : "本地代理";
     throw new ApiError(
-      `无法访问${target}（${e && e.message}）。请检查地址与网络，或确认插件代理已启动。`,
+      `无法访问网盘（${serverBase()}）：${(e && e.message) || e}。` +
+        "请检查网盘地址是否正确、网盘服务是否在运行、网络是否可达。",
       0,
-      kind === "direct" ? "network" : "proxy"
+      "network",
     );
-  }
-  return { resp, kind };
-}
-
-async function withChannelRetry(method, path, opts, onResponse) {
-  try {
-    const { resp, kind } = await requestOnce(method, path, opts);
-    // 401 也可能是「直连 token 过期」——交给上层统一处理，不在这里重试，
-    // 否则会变成「悄悄用代理拿到另一个会话」，语义混乱。
-    return await onResponse(resp, path, kind);
-  } catch (e) {
-    if (e instanceof ApiError && (e.kind === "network" || e.kind === "proxy")) {
-      // 通道级失败：作废缓存后重试一次，让 pickChannel 重新探测
-      resetChannel();
-      diag(`[channel] ${path} 失败（${e.kind}），重置通道后重试一次`);
-      const { resp, kind } = await requestOnce(method, path, opts);
-      return await onResponse(resp, path, kind);
-    }
-    throw e;
   }
 }
 
 export async function apiGet(path, params) {
-  const existing = inflight.get(path + qs(params));
-  if (existing) return existing;
   const key = path + qs(params);
-  const p = withChannelRetry("GET", path, { params }, (resp, p2) => parse(resp, p2));
+  const existing = inflight.get(key);
+  if (existing) return existing;
+  const p = requestOnce("GET", path, { params }).then((resp) => parse(resp, path));
   inflight.set(key, p);
   try {
     return await p;
@@ -691,7 +548,7 @@ export async function apiPost(path, fields) {
   for (const [k, v] of Object.entries(fields || {})) {
     if (v !== undefined && v !== null) fd.append(k, v);
   }
-  return withChannelRetry("POST", path, { bodyKind: fd }, (resp, p2) => parse(resp, p2));
+  return requestOnce("POST", path, { bodyKind: fd }).then((resp) => parse(resp, path));
 }
 
 /**
@@ -699,7 +556,7 @@ export async function apiPost(path, fields) {
  * fetch 拿不到上传进度，只有 XHR 可以，所以这里单独用 XHR。
  */
 export async function apiUpload(fields, file, onProgress) {
-  const { url, kind } = await resolveUrl("/api/upload");
+  const url = await resolveUrl("/api/upload");
   return new Promise((resolve, reject) => {
     const fd = new FormData();
     for (const [k, v] of Object.entries(fields || {})) {
@@ -710,10 +567,9 @@ export async function apiUpload(fields, file, onProgress) {
     const xhr = new XMLHttpRequest();
     xhr.open("POST", url, true);
     xhr.withCredentials = false;
-    if (kind === "direct") {
-      const t = getToken();
-      if (t) xhr.setRequestHeader("Authorization", `Bearer ${t}`);
-    }
+    // 单通道（直连）下恒带 Bearer；以前这里还要判 kind，现在没有第二条通道
+    const t = getToken();
+    if (t) xhr.setRequestHeader("Authorization", `Bearer ${t}`);
 
     xhr.upload.onprogress = (e) => {
       if (e.lengthComputable && onProgress) onProgress(e.loaded / e.total, e.loaded, e.total);
@@ -753,8 +609,7 @@ export const API = {
     return r;
   },
   async logout() {
-    // 两条通道都要清：代理由它自己删 cookie，直连则由我们删本地 token
-    try { await fetch(proxyBase() + "/__session", { method: "DELETE" }); } catch { /* 代理可能没在跑 */ }
+    // 单通道（直连）下会话就在本地 token 里，清掉即可。
     setToken("");
     resetChannel();
     return true;
@@ -762,33 +617,25 @@ export const API = {
   me: () => apiGet("/api/me"),
 
   /**
-   * 会话状态（跨通道统一语义）。
+   * 会话状态。
    *
-   * 代理通道：问代理 `__session`（它持有服务端 Cookie）
-   * 直连通道：本地有没有 token + 能不能取到 `/api/me`
+   * 单通道（直连）：本地有没有 token + 能不能取到 `/api/me`。
    *
-   * ★ 以前只有代理版本 ★
-   *   直连通道下代理可能压根没启动，去问 `__session` 永远是「无会话」，
-   *   界面就会错误地弹登录框。所以必须按通道分流。
+   * ★ 历史 ★
+   *   曾经还要按通道分流 —— 代理通道问代理的 `__session`（它持有服务端 Cookie），
+   *   直连通道看本地 token。代理删除后只剩一种判据，不会再出现
+   *   「代理没启动 ⇒ 误判为无会话 ⇒ 界面错误弹登录框」。
    */
   async hasSession() {
-    const kind = await pickChannel();
-    if (kind === "direct") {
-      if (!getToken()) return { hasSession: false, channel: "direct" };
-      try {
-        await apiGet("/api/me");
-        return { hasSession: true, channel: "direct" };
-      } catch (e) {
-        if (e && e.status === 401) return { hasSession: false, channel: "direct" };
-        throw e;
-      }
+    if (!getToken()) return { hasSession: false, channel: "direct" };
+    try {
+      await apiGet("/api/me");
+      return { hasSession: true, channel: "direct" };
+    } catch (e) {
+      if (e && e.status === 401) return { hasSession: false, channel: "direct" };
+      throw e;
     }
-    const r = await apiGet("/__session");
-    return Object.assign({ channel: "proxy" }, r || {});
   },
-
-  /** 代理自身的状态（是否已持有会话、上游错误）。仅代理通道有意义。 */
-  proxyStatus: () => apiGet("/__ping"),
 
   // ---- 通道诊断（设置界面用）----
   /** 当前通道（同步，乐观估计） */
@@ -861,7 +708,7 @@ export const API = {
 
   // ---- 预览 ----
   /**
-   * kkFileView 预览地址（已带代理前缀）
+   * kkFileView 预览地址（绝对地址，指向网盘 serverBase()）
    *
    * ★ 前置参数校验（必须）★
    *   后端 /api/preview 的 mount / path 都是 FastAPI 的必填查询参数，
@@ -874,7 +721,7 @@ export const API = {
     const r = await apiGet("/api/preview", { mount, path });
     return { url: fixUrl(r.url), raw: fixUrl(r.raw) };
   },
-  /** CAD 查看器深链（已带代理前缀） */
+  /** CAD 查看器深链（绝对地址，指向网盘 serverBase()） */
   async cadUrl(mount, path) {
     requireMountPath("/api/cad/preview", mount, path);
     const r = await apiGet("/api/cad/preview", { mount, path });
@@ -883,7 +730,7 @@ export const API = {
   /**
    * OnlyOffice 编辑器配置。
    *
-   * ★ apiJs 必须是浏览器直连的绝对地址，不加代理前缀 ★
+   * ★ apiJs 必须是浏览器直连的绝对地址 ★
    *
    * ★★★ embed 参数（任务③）★★★
    *   后端 build_editor_config() 会用 HS256 对**整份 config** 签名
@@ -921,36 +768,26 @@ export const API = {
 
   // ---- 直链 ----
   /**
-   * 下载地址 —— **必须按当前通道选基点**（踩过的坑）。
+   * 下载地址（同步）。
    *
-   * ★★★ 历史故障：这里原本写死 proxyBase() ★★★
+   * ★★★ 历史故障：这里曾经写死 proxyBase() ★★★
    *
-   *   `proxyBase()` 是 `http://127.0.0.1:<proxyPort>`，
-   *   那是**本机桌面端**的内嵌代理。但 NAS 部署的思源是**浏览器直连**的，
-   *   浏览器里 127.0.0.1 指的是**用户自己那台电脑**，根本没有代理进程 ——
-   *   于是所有下载、图片/视频/音频/文本预览全变成
+   *   `proxyBase()` 是 `http://127.0.0.1:<proxyPort>` —— 那是**本机桌面端**的内嵌代理。
+   *   但 NAS 部署的思源是**浏览器直连**的，浏览器里 127.0.0.1 指的是**用户自己那台电脑**，
+   *   根本没有代理进程 ⇒ 所有下载、图片/视频/音频/文本预览全变成
    *   `GET http://127.0.0.1:6810/api/download?… ERR_CONNECTION_REFUSED`。
+   *   （用户报的「下载会报错」、任务⑧「图片/视频/文本都打不开」，根因都是这一行。）
    *
-   *   （用户报的「下载会报错」、任务⑧「图片/视频/文本都打不开」，
-   *     根因都是这一行。）
+   * ★ 现在只有直连通道 ⇒ 基点恒为 `serverBase()`（网盘地址）★
    *
-   *   正确做法与 iframe / 直链一致：
-   *     · 直连通道 ⇒ serverBase()，即 http://192.168.193.70:8089 ✓
-   *     · 代理通道 ⇒ proxyBase()，即 http://127.0.0.1:6810（本机桌面端可达）✓
-   *
-   *   ★ 直连通道为什么不用 /api/download ★
-   *     /api/download 认 Cookie 会话，而直连是**跨源**的
-   *     （思源 :6806 → 网盘 :8089），拿不到 Cookie ⇒ 401。
-   *     所以直连走 `/api/raw/<文件名>?mount=&path=&exp=&sig=` 签名直链，
+   *   ★ 为什么不用 /api/download ★
+   *     /api/download 认 Cookie 会话，而直连是**跨源**的（思源 :6806 → 网盘 :8089），
+   *     拿不到 Cookie ⇒ 401。所以走 `/api/raw/<文件名>?mount=&path=&exp=&sig=` 签名直链，
    *     签名校验与 Cookie 无关，且后端对 raw 支持 Range（视频可拖进度）。
-   *     签名值由后端 /api/preview 签发，这里通过 signedDownloadUrl() 拿。
+   *     签名值由后端 /api/preview 签发，通过 signedDownloadUrl() 拿。
    */
   downloadUrl(mount, path, inline = false) {
-    if (currentKind() !== "direct") {
-      // 代理通道：代理自己持有 jar 会话，直接打 /api/download 即可
-      return proxyBase() + "/api/download" + qs({ mount, path, inline: inline ? "true" : undefined });
-    }
-    // 直连通道：优先用已缓存的签名直链（预热过就同步命中）
+    // 优先用已缓存的签名直链（预热过就同步命中）
     const cached = cachedRawUrl(mount, path);
     if (cached) return withInline(cached, inline);
     // 没缓存 ⇒ 退回一条**通道正确但需预热**的地址。
@@ -965,18 +802,12 @@ export const API = {
   },
 
   /**
-   * 异步版的下载地址（两条通道都能用）。
-   *
-   * - 代理通道 ⇒ 同 downloadUrl()，直接用 /api/download
-   * - 直连通道 ⇒ 先问 /api/preview 拿签名，再拼 /api/raw
+   * 异步版的下载地址：先问 /api/preview 拿签名，再拼 /api/raw。
    *
    * 追加 `inline=1` 时让后端按 inline 下发（图片/视频/文本预览要用）。
    * 注意：raw 的 inline 语义由后端 `?inline=` 决定，沿用同一套参数名。
    */
   async signedDownloadUrl(mount, path, inline = false) {
-    if (currentKind() !== "direct") {
-      return proxyBase() + "/api/download" + qs({ mount, path, inline: inline ? "true" : undefined });
-    }
     requireMountPath("/api/preview", mount, path);
     const r = await apiGet("/api/preview", { mount, path });
     const abs = browserReachableUrl(r.raw);
@@ -1003,9 +834,7 @@ export const API = {
    *   而 fixUrl() 对**已经是绝对地址**的串是原样返回的（它只补相对路径），
    *   所以这里必须显式改写主机，不能指望 fixUrl 兜住。
    *
-   *   改写成什么：当前通道的**浏览器可达**基点。
-   *     · 直连通道 ⇒ serverBase()，即 http://192.168.193.70:8089 ✓
-   *     · 代理通道 ⇒ proxyBase()，即 http://127.0.0.1:6810（本机桌面端可达）✓
+   *   改写成什么：**浏览器可达**基点 —— 恒为 serverBase()，即 http://192.168.193.70:8089 ✓
    *   签名在查询串里，换主机不影响校验，所以这样改是安全的。
    *
    * ★★★ download 参数（任务⑱，2026-09-23）★★★
@@ -1022,9 +851,9 @@ export const API = {
    *     签名覆盖 dl ⇒ 前端手动追加会让 sig 与实参不匹配 ⇒ 恒 403。
    *     （这一点已实测：v2 签名把 dl 并入 HMAC 输入。）
    *
-   *   ★ 代理通道为什么也能用 ★
-   *     代理通道下 /api/raw 同样是签名校验、不看 Cookie，因此 dl 一样有效；
-   *     browserReachableUrl() 会把主机换成 proxyBase()。
+   *   ★ 为什么 raw 直链不认 Cookie ★
+   *     /api/raw 是签名校验、不看 Cookie，因此 dl 维度在跨源直连下一样有效；
+   *     browserReachableUrl() 会把容器内主机名换成 serverBase()。
    *
    * @param {string} mount
    * @param {string} path
@@ -1038,6 +867,139 @@ export const API = {
       download: download ? "1" : undefined,
     });
     return browserReachableUrl(r.raw);
+  },
+
+  /**
+   * 取「短链」地址（`<serverUrl>/f/<token>`，约 40 字符）。
+   *
+   * ★ 为什么需要它（2026-09-30）★
+   *   用户报障原话：
+   *     「在浏览器中打开 地址这么复杂？是否有必要」
+   *     「oo 打开的地址就是很简单，这个是不是不对」
+   *   实测 `signedRawUrl` 出来的是：
+   *     /api/raw/微信图片_xxx.jpg?mount=售前项目&path=/遼宁利和/微信图片_xxx.jpg
+   *       &exp=1790759842&sig=c09408fa…   ← 共 324 字符
+   *   长度是**结构性**的：`sig` 必须覆盖 mount+path+exp，而 path 片段
+   *   还得为了「让 kkFileView 取到后缀」在路径里再出现一次 ——
+   *   前端做不了减法。
+   *
+   *   ⇒ 后端新增 `POST /api/shortlink` 落一条 (mount,path) → token 的映射，
+   *     返回 `/f/<token>`。同一文件**幂等**复用同一个 token。
+   *
+   * ★ 语义 ★
+   *   该地址**免登录**（token 即凭证、长期有效、可直接发给同事），
+   *   与既有「分享」(/s/<token>，有落地页/有效期/密码/次数上限)是两回事。
+   *
+   * ★ 调用方要能容忍它失败 ★
+   *   后端未升级时这里会 404 —— browserViewUrl() 里做了回退，
+   *   失败就退回原来的 signedRawUrl，不会把功能打没。
+   *
+   * @param {string} mount
+   * @param {string} path
+   * @param {string} [name]
+   * @returns {Promise<string>} 浏览器可打开的绝对短地址
+   */
+  async shortLinkUrl(mount, path, name) {
+    requireMountPath("/api/shortlink", mount, path);
+    const r = await apiPost("/api/shortlink", { mount, path, name });
+    const u = browserReachableUrl(r && r.url);
+    if (!u) throw new ApiError("后端未返回短链地址", 0, "api");
+    return u;
+  },
+
+  /**
+   * 「复制直链」的**唯一出口** —— 永久短链优先，失败静默回退限时签名链。
+   *
+   * ★ 为什么要有这个统一出口（2026-09-30，用户报障）★
+   *
+   *   用户原话：「两处复制直连 复制出来的路径不一样。需要调整一下」
+   *
+   *   病灶：两个入口各自直连 `signedRawUrl`，于是同一个文件复制出**两条完全
+   *   不同的长地址**：
+   *
+   *     右键菜单（打开型）  /api/raw/<名>?mount=..&path=..&exp=..&sig=14aea4…     330 字符
+   *     预览栏（下载型）    /api/raw/<名>?mount=..&path=..&exp=..&sig=6cec41…&dl=1 335 字符
+   *
+   *   `sig` 不同是必然的 —— `dl` 并入了 HMAC 输入，两处签的是**两份凭证**。
+   *   用户看到同一个文件有两条不同的地址，观感上就是 bug。
+   *
+   *   ⇒ 收敛到短链：`/f/<token>` 里**没有签名**，两个入口拿到的是**同一条
+   *     41 字符地址**，「下载」只表现为后缀 `?dl=1`（46 字符）。
+   *     差异从「两条毫不相干的长链」变成「一个可读的后缀」。
+   *
+   * ★ 顺带解决的三件事 ★
+   *   ① **不再 1 小时过期** —— 短链不带 `exp`，长期有效（想收回见
+   *      `POST /api/shortlink/revoke`）；
+   *   ② **可以发给同事** —— 短链免登录，对方无需装插件/无需登录网盘；
+   *   ③ **可读** —— `http://192.168.193.70:8089/f/N-MAJI5zBjO2` 能直接念出来。
+   *
+   * ★★ 语义保持不变（这是用户 2026-09-23 明确裁定过的，别"顺手统一"）★★
+   *   用户原话：「右键中的直连是打开和 预览上的直连是下载。」
+   *     · 右键菜单 → `download: false` ⇒ inline（浏览器里直接看）
+   *     · 预览栏   → `download: true`  ⇒ attachment（触发下载）
+   *   本方法只统一**基地址**，不抹平这个差异。
+   *
+   * ★ 失败回退是**必须**的 ★
+   *   短链依赖后端 `POST /api/shortlink`（2026-09-30 才上线，走 app-overrides
+   *   单文件挂载）。若后端被回滚 / 未升级，这里会 404 —— 此时**绝不能**
+   *   把「复制直链」整个打没，所以要静默退回 `signedRawUrl`（1 小时有效期，
+   *   但至少能用）。回退路径与短链的 dl 语义一一对应。
+   *
+   * @param {string} mount
+   * @param {string} path
+   * @param {{download?: boolean, name?: string}} [opts]
+   * @returns {Promise<string>} 浏览器可打开的绝对地址
+   */
+  async directLinkUrl(mount, path, opts = {}) {
+    const download = !!opts.download;
+    const name = opts.name || "";
+    try {
+      const short = await API.shortLinkUrl(mount, path, name);
+      if (short) return withDl(short, download);
+    } catch { /* 后端未升级 / 未登录 / 网络抖动 → 回退限时签名链 */ }
+    return API.signedRawUrl(mount, path, download);
+  },
+
+  /**
+   * 直接取二进制（**认证兜底链路**）—— 与「签名直链」互为备份。
+   *
+   * ★ 为什么需要它 ★
+   *   图片/视频的首选链路是 `/api/raw/…?exp=…&sig=…` 签名直链（浏览器可直接
+   *   用于 `<img src>`）。但真机上出现过「img 加载失败、同一条链接却能被
+   *   fetch/curl 完整取到」的情况 ⇒ 说明失败可能发生在 img 这一层。
+   *   此时需要一条**不依赖 URL 签名**的备用链路来兜底：
+   *     `/api/download` 认 Cookie 会话 —— 跨源直连拿不到 Cookie，
+   *     但它**同时认 `Authorization: Bearer`**，而 token 就在我们手里。
+   *   实测：`GET /api/download?mount=…&path=…&inline=true`
+   *         + `Authorization: Bearer <token>` ⇒ 200 + image/jpeg + 完整字节。
+   *
+   * ★ 与 signedDownloadUrl 的分工 ★
+   *   · signedDownloadUrl ⇒ 给 `<img src>` / `<a download>` 用的**地址**
+   *   · 本方法          ⇒ 给「地址不好使时」用的**取字节**手段（fetch + Bearer）
+   *
+   * @param {string} mount
+   * @param {string} path
+   * @param {boolean} [inline] true（默认）⇒ 让后端按 inline 下发，浏览器才会内联
+   * @returns {Promise<Blob>} 失败抛 ApiError
+   */
+  async downloadBlob(mount, path, inline = true) {
+    requireMountPath("/api/download", mount, path);
+    const r = await requestOnce("GET", "/api/download", {
+      params: { mount, path, inline: inline ? "true" : undefined },
+    });
+    if (!r.ok) {
+      const t = await r.text().catch(() => "");
+      throw new ApiError(
+        `取字节失败：HTTP ${r.status}${t ? " " + t.slice(0, 120) : ""}`,
+        r.status,
+        r.status === 401 ? "auth" : "api",
+      );
+    }
+    const blob = await r.blob();
+    if (!blob || !blob.size) {
+      throw new ApiError("取字节失败：响应体为空", r.status, "api");
+    }
+    return blob;
   },
 };
 
@@ -1265,6 +1227,15 @@ export async function browserViewUrl(mount, path, name) {
                  kind === "video" || kind === "audio" || kind === "text";
 
   if (NATIVE) {
+    // ★ 首选短链（2026-09-30）★
+    //   原来直接给 signedRawUrl，出来 324 字符（用户明确嫌长）。
+    //   短链 `/f/<token>` 约 40 字符，且后端是**内联吐字节**而非 302，
+    //   所以地址栏会稳定留在短地址上。
+    try {
+      const short = await API.shortLinkUrl(mount, path, nm);
+      if (short) return short;
+    } catch { /* 后端未升级 / 未登录 → 回退签名直链 */ }
+
     try {
       // ★ 必须走 API.signedRawUrl（它是 API 对象的方法，不是模块级函数）★
       const abs = await API.signedRawUrl(mount, path);

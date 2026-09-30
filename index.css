@@ -949,6 +949,23 @@ svg.nb-type-icon {
 }
 .nb-dialog-content { display: flex; flex-direction: column; height: 100%; }
 
+/* 「通道自检」结果输出：等宽、可滚动，最多占一半高度 */
+.nb-diag-out {
+  font-family: var(--b3-font-family-code, monospace);
+  font-size: 12px;
+  line-height: 1.7;
+  white-space: pre-wrap;
+  word-break: break-all;
+  margin: 0;
+  padding: 8px 10px;
+  max-height: 200px;
+  overflow: auto;
+  border-radius: var(--b3-border-radius);
+  background: var(--b3-theme-surface);
+  color: var(--b3-theme-on-surface);
+}
+.nb-diag-out:empty { display: none; }
+
 
 /* ==========================================================================
  * 嵌入块：宽度约束 + 点击预览（2026-09-22）

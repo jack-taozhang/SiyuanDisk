@@ -17,6 +17,42 @@ const assert = require("assert");
 const API = path.resolve(__dirname, "../src/api.js");
 const orig = fs.readFileSync(API, "utf8");
 
+/**
+ * 把 src/ 下的 ESM 依赖也按同一套轻量转译跑起来。
+ *
+ * ★ 为什么需要（2026-09-30）★
+ *   api.js 以前只 import ./proxy.js（CommonJS，Node require 能直接加载）。
+ *   内置代理删除后改为 import ./diag.js（ESM）⇒ Node require 直接抛
+ *   `SyntaxError: Unexpected token 'export'`。相对依赖必须一起转译。
+ */
+const srcCache = new Map();
+function loadSrcFile(abs) {
+  if (srcCache.has(abs)) return srcCache.get(abs);
+  let code = fs.readFileSync(abs, "utf8");
+  code = code.replace(
+    /^import\s*\{([^}]*)\}\s*from\s*["']([^"']+)["'];?[ \t]*$/gm,
+    (_f, ns, mod) => ns.split(",").map((x) => x.trim()).filter(Boolean)
+      .map((one) => { const [imp, local] = one.split(/\s+as\s+/);
+        return `const ${(local || imp).trim()} = require(${JSON.stringify(mod)}).${imp.trim()};`; }).join("\n"),
+  );
+  const exported = [];
+  const re2 = /^export\s+(?:async\s+)?(?:function|class|const|let|var)\s+([A-Za-z_$][\w$]*)/gm;
+  let mm; while ((mm = re2.exec(code))) exported.push(mm[1]);
+  code = code.replace(/^export\s+(?=(?:async\s+)?(?:function|class|const|let|var)\s)/gm, "");
+  code += `\nmodule.exports = { ${exported.join(", ")} };`;
+
+  const m2 = { exports: {} };
+  const c2 = vm.createContext({ module: m2, exports: m2.exports, require: srcRequire, console });
+  vm.runInContext(code, c2, { filename: abs });
+  srcCache.set(abs, m2.exports);
+  return m2.exports;
+}
+
+const srcRequire = (id) =>
+  /^\.\.?\//.test(id)
+    ? loadSrcFile(path.resolve(__dirname, "../src", id))
+    : require(id);
+
 function loadWith(src) {
   let s = src;
   s = s.replace(
@@ -31,13 +67,11 @@ function loadWith(src) {
   s = s.replace(/^export\s+(?=(?:async\s+)?(?:function|class|const|let|var)\s)/gm, "");
   s += `\nmodule.exports = { ${names.join(", ")} };`;
 
-  const srcRequire = (id) =>
-    require(/^\.\.?\//.test(id) ? path.resolve(__dirname, "../src", id) : id);
   const mod = { exports: {} };
   const store = new Map();
   const ctx = vm.createContext({
     module: mod, exports: mod.exports, require: srcRequire, console,
-    window: { __nebuladiskPlugin: { settings: { serverUrl: "http://127.0.0.1:9", proxyPort: 6810 }, boot: { noNode: true } } },
+    window: { __nebuladiskPlugin: { settings: { serverUrl: "http://127.0.0.1:9" } } },
     sessionStorage: { getItem: (k) => (store.has(String(k)) ? store.get(String(k)) : null),
                       setItem: (k, v) => store.set(String(k), String(v)),
                       removeItem: (k) => store.delete(String(k)), clear: () => store.clear() },

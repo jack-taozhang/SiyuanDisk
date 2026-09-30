@@ -60,8 +60,15 @@ export function createExternalContract({ API, pickViewer, diag } = {}) {
   };
 
   const contract = {
-    /** 契约版本。消费方据此判断能力是否存在，不靠探测方法名。 */
-    version: 1,
+    /**
+     * 契约版本。消费方据此判断能力是否存在，不靠探测方法名。
+     *
+     *   v1 —— 初版（挂载/列目录/预览地址/直链/健康检查 + mkdir/rename/remove/move）
+     *   v2 —— 2026-09-30 新增 `directLinkUrl`（永久短链 `/f/<token>`）。
+     *         纯**增量**：v1 的方法签名与语义一个都没动 ⇒ 老消费方照常用 v1 子集，
+     *         想用永久直链的消费方判 `version >= 2` 即可。
+     */
+    version: 2,
 
     /** 契约标识，便于日志排查（不表示消费方） */
     id: "nebuladisk.external",
@@ -258,6 +265,34 @@ export function createExternalContract({ API, pickViewer, diag } = {}) {
      */
     signedRawUrl: (mount, path, download = false) =>
       guard(async () => String(await API.signedRawUrl(mount, path, download) || ""), "signedRawUrl"),
+
+    /**
+     * **永久直链**（v2 新增，2026-09-30）—— 短链 `/f/<token>` 优先，
+     * 失败静默回退 `signedRawUrl`（1 小时有效期）。与插件两个
+     * 「复制直链」入口走的是**同一个** `API.directLinkUrl()`。
+     *
+     * ★ 与 `signedRawUrl` 的区别（消费方选型时看这里）★
+     *
+     *   | | `signedRawUrl` | `directLinkUrl` |
+     *   |---|---|---|
+     *   | 地址长度 | ~330 字符 | ~41 字符（下载型 +5） |
+     *   | 有效期 | **1 小时**（`ttl=3600` 写死） | **长期有效** |
+     *   | 鉴权 | URL 签名（`exp`+`sig`） | token 即凭证 |
+     *   | 能否发给别人 | 能，但 1 小时后失效 | 能，且长期有效 |
+     *   | 收回 | 等它自然过期 | `POST /api/shortlink/revoke` |
+     *
+     * ★ 安全提示 ★
+     *   短链**免登录** ⇒ 拿到地址的人都能看。这是产品上明确选的
+     *   「链接即凭证」语义（见网盘 `shortlink.py` 的 docstring）。
+     *   消费方**不要**把短链批量落盘/打印到公共日志里。
+     *
+     * @param {boolean} download true=强制下载（`?dl=1`），false=内联打开
+     */
+    directLinkUrl: (mount, path, download = false) =>
+      guard(
+        async () => String(await API.directLinkUrl(mount, path, { download }) || ""),
+        "directLinkUrl"
+      ),
 
     /** 下载地址（非签名，保留原语义）。 */
     downloadUrl: (mount, path, inline = false) =>

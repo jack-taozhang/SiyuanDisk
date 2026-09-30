@@ -12,7 +12,7 @@ import { FileTree } from "./src/tree.js";
 import { Viewer } from "./src/viewer.js";
 import { registerEmbed, bindPluginApi, migrateLegacyEmbeds, buildEmbedMarkdown, findLegacyFenceBlocks, findParagraphFences, insertEmbedIntoDoc, collapseAllOpenEmbeds } from "./src/embed.js";
 import { createExternalContract } from "./src/external.js";
-import { NebulaProxy, HAS_NODE, setDiagFile, diag, dirExists, pickWorkspace, normPath, probeProxyPort } from "./src/proxy.js";
+import { setDiagFile, diag, dirExists, pickWorkspace, normPath } from "./src/diag.js";
 /* ==========================================================================
  * NebulaDisk 网盘 —— 思源笔记插件
  * --------------------------------------------------------------------------
@@ -24,7 +24,15 @@ import { NebulaProxy, HAS_NODE, setDiagFile, diag, dirExists, pickWorkspace, nor
  *   ③ 笔记内无缝嵌入文件树 / 文件页面
  *        → 自定义块渲染 + 斜杠菜单 + 命令（src/embed.js）
  *
- * 跨域问题的解法见 src/proxy.js 顶部注释。
+ * ★ 网络通道：**只有直连一条**（2026-09-30 起）★
+ *   插件直接请求网盘地址（serverUrl）+ `Authorization: Bearer <token>`。
+ *   后端已开 CORS（`allow_origins=["*"]` + `allow_credentials=False`），
+ *   所以跨源请求不需要任何本地中转。
+ *
+ *   历史上还有个「本地代理」（插件在思源渲染进程里起 127.0.0.1:6810 转发），
+ *   已于 2026-09-30 **整体删除** —— 它是个会死、会占端口、会被复用的进程，
+ *   属于纯增的失败面；而且它的启动状态一度被误当成「通道就绪」的判据，
+ *   导致直连明明可用时嵌入块却拒绝渲染（用户看到「代理未启动」）。
  * ========================================================================== */
 
 
@@ -52,13 +60,12 @@ import { NebulaProxy, HAS_NODE, setDiagFile, diag, dirExists, pickWorkspace, nor
  */
 
 /*
- * 代理类必须在**编译期**就引入。
+ * ★ 所有本地模块必须在**编译期** import —— 不能写成运行时的 require("./src/xxx.js") ★
  *
- *   不能写成运行时的 require("./src/proxy.js")：
  *   思源给插件的 require 只认 "siyuan"，其余走 Electron 的 window.require，
  *   其解析基准是渲染进程 bundle 而非插件目录 ⇒ 必然 MODULE_NOT_FOUND，
  *   而且只报在浏览器 console，siyuan.log 里看不到。
- *   构建脚本会把它连同本文件一起打成一个 index.js。
+ *   ⇒ 插件由 tools/build.js 打成**单文件** index.js，import 在打包期就展开了。
  */
 
 
@@ -117,177 +124,27 @@ const DEFAULT_SETTINGS = {
   username: "tao_zhang",
   password: "",
   autoLogin: true,
-  proxyPort: 6810,
   defaultMount: "",
   confirmDelete: true,
 };
 
 /* -------------------------------------------------------------------------
- * 代理引导
+ * 单通道（直连）就绪判据
  *
- * 难点：插件的 index.js 跑在「思源渲染进程（Electron renderer）」里。
- *   在 Electron 中，renderer 带有 node 集成时可以直接 require("http")；
- *   但如果思源的 renderer 关闭了 nodeIntegration（新版本倾向如此），
- *   require 就不可用。
+ *   代理删除后，「路通不通」只取决于一件事：**配置了网盘地址没有**。
+ *   有地址 ⇒ 直连可走；没地址 ⇒ 报 config 类错误（见 api.js resolveUrl）。
  *
- * 策略（三级降级，逐级给出可操作提示）：
- *   ① 直接 require node 内建模块，在渲染进程内起代理 —— 最省事，首选
- *   ② 失败则提示用户粘贴「JS 代码片段」启动代理（片段在设置面板里一键复制）
- *   ③ 都不行则提示改用「反代统一入口」方案（把 /nb 交给 nginx）
- *
- * 关键点：不管哪条路，代理都必须监听 127.0.0.1。
- *   思源无论跑在宿主机还是容器里，插件 JS 都在思源自己的进程内，
- *   所以 127.0.0.1 对它永远可达。
+ *   ★ 为什么不再有「后台探测 / 启动本地服务」这一步 ★
+ *     以前 onload 要异步启动内嵌代理，再按它的成败决定 UI 状态。
+ *     现在没有任何本地进程要起 —— 请求发出那一刻自然知道通不通，
+ *     失败会带上可读原因（地址错 / 服务没开 / 网络不通）。
+ *     省掉的不只是代码，更是「先有状态、后有真相」这类时序 bug。
  * ---------------------------------------------------------------------- */
-class ProxyBoot {
-  constructor(plugin) {
-    this.plugin = plugin;
-    this.proxy = null;
-    this.mode = "none";   // none | inline | external
-  }
-
-  /**
-   * 尝试在渲染进程内直接启动代理。
-   *
-   * ★ 这里**不能**写 require("./src/proxy.js")。
-   *
-   *   思源给插件的 require 只处理 "siyuan"，其余委托给 Electron 的
-   *   window.require，其解析基准是**渲染进程 bundle**，不是插件目录，
-   *   所以相对路径必然 MODULE_NOT_FOUND。
-   *   而且这个错误只写进浏览器 console，siyuan.log 里毫无痕迹。
-   *
-   *   ⇒ 插件被 tools/build.js 打成**单文件**，proxy 已是同文件内的
-   *     模块命名空间，直接引用即可（见 import { NebulaProxy }）。
-   *      真正的风险只剩「渲染进程没有 node 能力」这一种，
-   *      此时 require("http") 会在 **加载 proxy 模块时**就抛错 ——
-   *      所以下面用 try 包住构造，失败就降级到外部代理 / nginx 方案。
-   */
-  async startInline() {
-    const s = this.plugin.settings;
-    const port = Number(s.proxyPort) || 6810;
-
-    // ★★★ 先判环境有没有 node 能力 ★★★
-    //   服务端思源（NAS 上用 Docker 跑、浏览器访问）**没有 require/process/fs**。
-    //   这时起代理是物理上不可能的，**不该报错、更不该让插件挂掉** ——
-    //   必须干脆地降级为「直连通道」，并把原因讲清楚。
-    //   历史教训：proxy.js 曾在模块顶层 require("http")，
-    //   浏览器里脚本求值即抛 ⇒ 思源 console.error 后静默丢弃整个插件
-    //   ⇒ 连诊断日志都不产生，表现为「插件在列表里但毫无反应」。
-    if (!HAS_NODE) {
-      // ★ 用 "direct" 而不是 "none" ★
-      //   "none" 是「本该有代理却没有」的失败态；这里不是失败，
-      //   而是「这个环境本来就不需要代理」。状态必须区分开，
-      //   否则侧边栏会误判为通道不可用而不渲染文件树。
-      this.mode = "direct";
-      this._noNode = true;
-      diag("[proxy] 当前环境无 node 能力（浏览器端思源）⇒ 使用直连通道（正常）");
-      return true;
-    }
-
-    // ── 先探测：端口上是否已经有本插件的代理在跑 ──
-    //  思源的渲染进程会**反复重建**（每次重载都会重新执行 onload），
-    //  而上一轮的代理句柄随旧进程一起消失时端口未必立刻释放。
-    //  旧实现直接 listen，撞上 EADDRINUSE 就判定「代理不可用」，
-    //  实际那个代理是好的 —— 这个误判让通道白丢。
-    //  所以先探一次，能复用就复用。
-    const existing = await probeProxyPort(port);
-    if (existing.ok) {
-      this.mode = "external";
-      this.externalPort = port;
-      this._reused = true;
-      diag(`复用已在运行的代理 :${port}（target=${existing.info && existing.info.target}）`);
-      return true;
-    }
-
-    try {
-      this.proxy = new NebulaProxy({
-        target: s.serverUrl,
-        port,
-        host: "127.0.0.1",
-        cookieFile: this.plugin.cookieFile(),
-        log: (m) => console.log(m),
-      });
-      await this.proxy.start();
-      this.mode = "inline";
-      this.actualPort = this.proxy.actualPort;
-      return true;
-    } catch (e) {
-      // 记全栈，便于从日志定位（端口占用 / 无 node 能力 / 配置错误）
-      this.lastError = e && e.stack ? e.stack.split("\n")[0] + " | " + e.message : String(e.message || e);
-      this.proxy = null;
-      // ── 兜底：listen 失败的另一种可能是「刚好被别的进程抢在探测之后占了」，
-      //    再探一次，仍能复用就不算失败。
-      const again = await probeProxyPort(port);
-      if (again.ok) {
-        this.mode = "external";
-        this.externalPort = port;
-        this._reused = true;
-        diag(`listen 失败但探测到可用代理 :${port}，改用复用模式`);
-        return true;
-      }
-      return false;
-    }
-  }
-
-  /**
-   * 探测外部代理是否已经在跑。
-   *
-   * ★ 用 Node http 而不是浏览器 fetch ★
-   *   fetch 受同源策略约束 —— 思源页面与代理端口不同即跨源，
-   *   若那个代理是旧版（无 CORS 头），响应体会被浏览器丢弃，
-   *   fetch 抛错 ⇒ 误判「没有代理」。见 proxy.js: probeProxyPort 的说明。
-   */
-  async probeExternal() {
-    const s = this.plugin.settings;
-    const port = Number(s.proxyPort) || 6810;
-    const r = await probeProxyPort(port);
-    if (!r.ok) return false;
-    // 外部代理的端口与思源不同 ⇒ 插件要指向它，而不是 /nb 相对路径
-    this.mode = "external";
-    this.externalPort = port;
-    this._reused = true;
-    return true;
-  }
-
-  async stop() {
-    // 复用来的代理不属于本实例，不能停 —— 否则会把别的渲染进程
-    // （或用户自己起的代理）一起关掉。
-    if (this.proxy) {
-      await this.proxy.stop();
-      this.proxy = null;
-    }
-    this._reused = false;
-    // ★ 无 node 能力是环境属性，不因 stop 而改变 ★
-    //   若这里无脑置 "none"，api.js 的 hasNode() 会读不到，
-    //   又可能把请求带回 127.0.0.1:6810。
-    this.mode = this._noNode ? "direct" : "none";
-  }
-
-  /**
-   * 本环境有没有 node 能力（= 能不能起本地代理）。
-   *
-   * api.js 的 hasNode() 会读这个字段来锁定通道：
-   * 浏览器端思源**永远不该**回退到 127.0.0.1:6810。
-   */
-  get noNode() {
-    return !!this._noNode;
-  }
-
-  get status() {
-    if (this.mode === "inline") return { ok: true, mode: "inline", detail: "插件内嵌代理运行中" };
-    if (this.mode === "external") return { ok: true, mode: "external", detail: `外部代理运行中（端口 ${this.externalPort}）` };
-    // ★★★ 「无 node 能力」是一种**正常可用状态**，不是失败 ★★★
-    //   服务端思源（NAS Docker + 浏览器）就是这样：起不了代理，
-    //   但只要网盘地址配好、后端开了 CORS，直连通道完全能用。
-    //   这里若返回 ok:false，侧边栏会一直停在「通道未就绪」，
-    //   明明能用却什么都不显示 —— 用户只会觉得插件坏了。
-    //   所以单独给一个 direct 模式，并且 ok:true。
-    if (this.mode === "direct") {
-      return { ok: true, mode: "direct", detail: "直连通道（当前环境无需内置代理）" };
-    }
-    return { ok: false, mode: "none", detail: this.lastError || "代理未启动" };
-  }
-}
+const CHANNEL_STATUS = Object.freeze({
+  ok: true,
+  mode: "direct",
+  detail: "直连通道（直接请求网盘地址）",
+});
 
 /* -------------------------------------------------------------------------
  * 插件主体
@@ -296,8 +153,6 @@ export default class NebulaDiskPlugin extends Plugin {
   constructor(options) {
     super(options);
     this.settings = { ...DEFAULT_SETTINGS };
-    /** @type {ProxyBoot} */
-    this.boot = null;
     /** @type {FileTree|null} */
     this.tree = null;
     this._unauthorized = false;
@@ -509,31 +364,20 @@ export default class NebulaDiskPlugin extends Plugin {
       if (this.tree) this.tree.onSessionLost();
     });
 
-    // 10) 启动代理（异步，不阻塞插件加载）
-    this.boot = new ProxyBoot(this);
-    this.bootReady = this.boot.startInline().then(async (ok) => {
-      if (!ok) {
-        diag(`startInline 失败: ${this.boot.lastError || "(无异常信息)"}`);
-        // 退化：探测外部代理（用户用 JS 代码片段起的那种）
-        const ext = await this.boot.probeExternal();
-        if (!ext) {
-          const detail = this.boot.status.detail;
-          diag(`外部代理也探测不到 ⇒ 代理不可用。detail=${detail}`);
-          console.warn("[nebuladisk] 代理未启动:", detail);
-          if (this.tree) this.tree.onProxyDown(detail);
-          return false;
-        }
-        diag("外部代理可用（mode=external）");
-      }
-      // 代理可用 → 尝试自动登录
-      diag(`代理就绪 mode=${this.boot.mode} port=${this.boot.actualPort || ""}`);
+    // 10) 自动登录（异步，不阻塞插件加载）
+    //
+    //   ★ 这里不再有「启动本地服务」这一步 ★
+    //     以前要异步起内嵌代理，再按它的成败决定 UI 与是否自动登录。
+    //     现在通道恒为直连，唯一的前置条件就是「配了地址 + 配了密码」，
+    //     条件满足就直接尝试登录；不满足也不必给侧边栏挂任何「未就绪」横幅
+    //     —— 用户自己知道还没填设置。
+    this.bootReady = (async () => {
       if (this.settings.autoLogin && this.settings.password) {
         await this.tryAutoLogin();
       }
-      if (this.tree) this.tree.onProxyUp();
       return true;
-    }).catch((e) => {
-      diag(`bootReady 抛异常: ${e && e.stack ? e.stack : e}`);
+    })().catch((e) => {
+      diag(`autoLogin 抛异常: ${e && e.stack ? e.stack : e}`);
       return false;
     });
 
@@ -548,14 +392,12 @@ export default class NebulaDiskPlugin extends Plugin {
 
   onLayoutReady() {
     // 布局就绪时，如果面板已经存在（用户上次是展开的），
-    // 主动把代理/会话状态同步给它 —— 因为面板的 bootstrap 可能在
-    // 代理就绪之前就跑完了。
+    // 等自动登录跑完再刷新一次 —— 否则面板可能在拿到 token 之前
+    // 就 bootstrap 完了，只能显示登录框。
     if (this.tree) {
-      this.bootReady?.then((ok) => {
-        if (!this.tree) return;
-        if (ok) this.tree.onProxyUp();
-        else this.tree.onProxyDown(this.boot ? this.boot.status.detail : "未初始化");
-      });
+      this.bootReady?.then(() => {
+        if (this.tree) this.tree.refresh();
+      }).catch(() => { /* 刷新失败不影响主流程 */ });
     }
 
     // ★ 自愈①：修复「data-info 缺斜杠」的自定义块 ★
@@ -597,10 +439,6 @@ export default class NebulaDiskPlugin extends Plugin {
       this.tree.destroy();
       this.tree = null;
     }
-    if (this.boot) {
-      await this.boot.stop();
-      this.boot = null;
-    }
     if (window.__nebuladiskPlugin === this) {
       // ★ 必须连 external 一起清 ★
       //   契约是挂在实例上的，但消费方（画布等）探测的是
@@ -633,26 +471,15 @@ export default class NebulaDiskPlugin extends Plugin {
   }
 
   async saveSettings() {
-    // ★ 地址/端口一变，通道结论就作废 ★
-    //   通道是按 serverUrl 缓存的，改了地址必须重探，
-    //   否则会拿着旧地址的探测结果去请求新地址（表现为莫名的连不上）。
+    // 地址一变就记一笔，便于排查「改了地址但界面还在打旧地址」这类问题。
+    // （直连下没有通道缓存需要作废 —— 每次请求都实时读 settings.serverUrl。）
     const prev = this._lastSavedServer;
     const now = String(this.settings.serverUrl || "").trim();
     if (prev !== undefined && prev !== now) {
-      try {
-        API.resetChannel();
-        diag(`[设置] 网盘地址变更：${prev || "(空)"} → ${now || "(空)"}，已重置通道`);
-      } catch { /* ignore */ }
+      diag(`[设置] 网盘地址变更：${prev || "(空)"} → ${now || "(空)"}`);
     }
     this._lastSavedServer = now;
     await this.saveData(STORAGE_KEY, this.settings);
-  }
-
-  /** cookie 落盘路径（与思源工作区/data/storage 同级，便于清理） */
-  cookieFile() {
-    const wd = this.workspaceDir();
-    if (!wd) return "";
-    return `${wd}/storage/nebuladisk.cookie.json`;
   }
 
   /**
@@ -662,8 +489,7 @@ export default class NebulaDiskPlugin extends Plugin {
    *   实测思源 3.8.4 桌面端**没有** `config.system.workDir` 这个字段
    *   （那是 kernel 侧的 conf，不在前端 config 里）。
    *   只写这一个来源的后果：拿不到 → diagFile() 返回空 → diag() 全部静默，
-   *   cookie 也只存内存不落盘。排查时只看到「插件在、但什么都不发生」，
-   *   完全是个黑洞。
+   *   排查时只看到「插件在、但什么都不发生」，完全是个黑洞。
    *
    * 回退顺序：
    *   ① window.siyuan.config.system.workspaceDir / workDir
@@ -736,6 +562,58 @@ export default class NebulaDiskPlugin extends Plugin {
     return "";
   }
 
+  /**
+   * 通道自检 —— 逐条验证「路通不通」，**只读**，不改任何设置。
+   *
+   * 输出三行：网盘地址 → 连通性探活 → 登录与列盘。
+   * 目的是把「连不上」这类模糊结论变成可定位的具体失败点：
+   * 地址没配 / 服务没起 / 网络不通 / 没登录 —— 一眼能分开。
+   * @returns {Promise<string[]>}
+   */
+  async runChannelSelfCheck() {
+    const s = this.settings;
+    const base = String(s.serverUrl || "").trim().replace(/\/+$/, "");
+    const out = [];
+
+    out.push(`网盘地址：${base || "(未配置)"}`);
+    out.push("通道：直连（直接请求网盘地址，无本地代理）");
+
+    // ① 连通性探活
+    if (!base) {
+      out.push("① 连通性探活：跳过（未配置网盘地址）");
+    } else {
+      const ctl = typeof AbortController !== "undefined" ? new AbortController() : null;
+      const timer = ctl ? setTimeout(() => ctl.abort(), 4000) : null;
+      try {
+        const r = await fetch(`${base}/healthz`, {
+          method: "GET",
+          mode: "cors",
+          credentials: "omit",
+          headers: { Accept: "application/json" },
+          signal: ctl ? ctl.signal : undefined,
+        });
+        // ★ 能拿到响应 = CORS 已放行；ACAO 无值是常态（后端只在带 Origin 时回）★
+        out.push(`① 连通性探活：HTTP ${r.status} ${r.ok ? "✓" : "✗"}（ACAO=${r.headers.get("access-control-allow-origin") || "无"}）`);
+      } catch (e) {
+        out.push(`① 连通性探活：✗ 失败（${(e && e.message) || e}）`);
+      } finally {
+        if (timer) clearTimeout(timer);
+      }
+    }
+
+    // ② 业务接口：登录态 + 列盘
+    try {
+      const me = await API.me();
+      const n = Array.isArray(me && me.mounts) ? me.mounts.length : 0;
+      const who = (me && (me.display || me.username)) || "已连接";
+      out.push(`② 登录与列盘：✓ ${who}，可见 ${n} 个盘`);
+    } catch (e) {
+      out.push(`② 登录与列盘：✗ ${(e && e.message) || e}`);
+    }
+
+    return out;
+  }
+
   openSetting() {
     const s = this.settings;
 
@@ -765,13 +643,7 @@ export default class NebulaDiskPlugin extends Plugin {
      */
     const syncInputs = () => {
       for (const { key, input } of inputs) {
-        let v = input.value;
-        if (key === "proxyPort") {
-          const n = Number(v);
-          if (v !== "" && Number.isFinite(n) && n > 0) s[key] = n;
-          continue;
-        }
-        s[key] = v;
+        s[key] = input.value;
       }
     };
 
@@ -786,33 +658,25 @@ export default class NebulaDiskPlugin extends Plugin {
     const box = document.createElement("div");
     box.className = "nb-settings";
 
-    const status = this.boot ? this.boot.status : { ok: false, detail: "未初始化" };
-    const banner = document.createElement("div");
-    // ★ 徽标语义要区分「直连可用」与「代理可用」★
-    //   旧的判断只看代理：地址填对了、后端也开了 CORS，
-    //   但因为代理没起来就显示「未就绪」，误导用户去查网络。
-    //   现在：有 serverUrl 且（直连探测通过 或 代理就绪）就算可用。
+    // ★ 徽标判据 = 「**配了网盘地址没有**」★
+    //   直连是唯一通道，所以这既是必要条件也是充分条件：
+    //   有地址 ⇒ 请求打得出（通不通由「测试连接 / 通道自检」当场验证）；
+    //   没地址 ⇒ 请求根本无从发出，必须提示去填。
     const hasServer = !!String(s.serverUrl || "").trim();
-    const directOk = hasServer && (API.currentKind ? API.currentKind() === "direct" : false);
-    const usable = directOk || status.ok;
-    banner.className = `nb-settings-banner ${usable ? "is-ok" : "is-warn"}`;
-    if (directOk) {
-      banner.textContent = `✓ 直连模式 —— ${s.serverUrl}（无需本地代理）`;
-    } else if (status.ok) {
-      banner.textContent = `✓ 代理模式 —— ${status.detail}`;
-    } else {
-      banner.textContent = `⚠ 通道未就绪 —— ${status.detail}`;
-    }
+    const banner = document.createElement("div");
+    banner.className = `nb-settings-banner ${hasServer ? "is-ok" : "is-warn"}`;
+    banner.textContent = hasServer
+      ? `✓ 直连模式 —— ${s.serverUrl}`
+      : "⚠ 未配置网盘地址 —— 请填写下面的「网盘地址」";
     box.appendChild(banner);
 
     box.appendChild(mkInput("网盘地址", "serverUrl", "text", "http://192.168.193.70:8089"));
     box.appendChild(mkInput("用户名", "username"));
     box.appendChild(mkInput("密码（用于自动登录）", "password", "password", "留空则不自动登录"));
     box.appendChild(hint(
-      "优先走「直连」：直接请求网盘地址，不需要本地代理，网页端/手机端也能用。" +
-      "仅当直连失败（后端未开 CORS 等）时才回退到下面的本地代理。"
+      "插件直接请求网盘地址（后端已开启跨域），不需要任何本地代理或本地服务。" +
+      "网页端 / 手机端与桌面端行为一致。"
     ));
-    box.appendChild(mkInput("代理端口（兜底通道）", "proxyPort", "number", "6810"));
 
     // 自动登录开关
     const rowAuto = document.createElement("div");
@@ -841,27 +705,14 @@ export default class NebulaDiskPlugin extends Plugin {
         syncInputs();
         await this.saveSettings();
 
-        // ★ 测试要按「实际会用的通道」来测 ★
-        //   旧版无条件重启代理再测 —— 但直连模式压根不用代理，
-        //   代理起不来时会把「网络明明是通的」误报成失败。
-        //   现在先作废通道缓存、重新探测，让 pickChannel 自己决定。
-        API.resetChannel();
-        if (this.boot) { await this.boot.stop(); }
-        this.boot = new ProxyBoot(this);
-        // 探测是异步且非阻塞的：直连可用就不必真去起代理
-        const kind = await API.currentKindAsync();
-
-        if (kind === "proxy") {
-          // 回退到代理时才需要它真的起来
-          const ok = (await this.boot.startInline()) || (await this.boot.probeExternal());
-          if (!ok) throw new Error(this.boot.status.detail);
-        }
-
+        // ★ 直连下「测试」= 真打一次业务接口 ★
+        //   以前要先重启代理再测（代理起不来会把「网络明明是通的」误报成失败）；
+        //   现在没有本地服务这一步，直接请求 /api/me，成功即通道可用。
         const me = await API.me();
-        diag(`[测试连接] 通道=${kind} /api/me 原始返回: ${JSON.stringify(me)}`);
+        diag(`[测试连接] /api/me 原始返回: ${JSON.stringify(me)}`);
         const name = me?.username || me?.display || this.settings.username || "已连接";
         const n = Array.isArray(me?.mounts) ? me.mounts.length : 0;
-        showMessage(`✓ 连接成功（${kind === "direct" ? "直连" : "代理"}）：${name}，可见 ${n} 个盘`);
+        showMessage(`✓ 连接成功（直连）：${name}，可见 ${n} 个盘`);
       } catch (e) {
         showMessage(`✗ ${e.message}`, 6000, "error");
       } finally {
@@ -891,9 +742,39 @@ export default class NebulaDiskPlugin extends Plugin {
       }
     };
 
+    // ── 通道自检：把「路通不通」逐条摆出来 ──
+    //   为什么需要：旧版只给一句「通道未就绪 —— 代理未启动」，
+    //   用户和排查者都不知道到底是地址错、网络不通、还是代理没起来。
+    //   自检只读，不改任何设置。
+    const diagBtn = document.createElement("button");
+    diagBtn.className = "b3-button b3-button--outline";
+    diagBtn.textContent = "通道自检";
+
+    const diagOut = document.createElement("pre");
+    diagOut.className = "nb-diag-out";
+
+    diagBtn.onclick = async () => {
+      const label = diagBtn.textContent;
+      diagBtn.disabled = true;
+      diagBtn.textContent = "自检中…";
+      diagOut.textContent = "";
+      try {
+        syncInputs();
+        await this.saveSettings();
+        diagOut.textContent = (await this.runChannelSelfCheck()).join("\n");
+      } catch (e) {
+        diagOut.textContent = `自检异常：${(e && e.message) || e}`;
+      } finally {
+        diagBtn.disabled = false;
+        diagBtn.textContent = label;
+      }
+    };
+
     actions.appendChild(testBtn);
     actions.appendChild(loginBtn);
+    actions.appendChild(diagBtn);
     box.appendChild(actions);
+    box.appendChild(diagOut);
 
     const dlg = new Dialog({
       title: this.i18n.settingsTitle || "NebulaDisk 设置",
@@ -931,8 +812,7 @@ export default class NebulaDiskPlugin extends Plugin {
     try {
       const r = await API.login(u, p);
       const name = (r && (r.display || r.username)) || u;
-      const ch = API.currentKind();
-      diag(`[会话] 自动登录成功（通道=${ch}）：${name}${r && r.token ? "（已取得直连 token）" : ""}`);
+      diag(`[会话] 自动登录成功：${name}${r && r.token ? "（已取得 token）" : ""}`);
       this._unauthorized = false;
       return true;
     } catch (e) {
@@ -943,21 +823,24 @@ export default class NebulaDiskPlugin extends Plugin {
 
   /** 供界面调用的「确保已登录」 */
   /**
-   * 是否可以绕过本地代理直接用直连通道。
+   * ★★ 「通道可用吗」—— 所有**只读入口**（嵌入块、侧边栏引导）的就绪判据 ★★
    *
-   * 直连只需一个条件：**配了网盘地址**。
-   * 不需要代理、不需要端口、不需要任何本地 Node 进程。
+   * 判据只有一条：**配了网盘地址没有**。
+   *   直连是唯一通道 ⇒ 有地址就能把请求发出去；没地址根本无从发出。
+   *   「地址对不对、服务起没起、网络通不通」由请求本身回答（失败带可读原因），
+   *   不再靠本地状态去猜。
    *
-   * ★ 为什么单独抽一个方法 ★
-   *   bootstrap 里原本写死了「等 boot.status.ok」——
-   *   那是**代理**的启动状态。但直连通道根本不用代理，
-   *   于是"地址配好了、代理因端口占用没起来"时面板会卡死在
-   *   「通道未就绪」，而网络其实是通的。
-   *   把它抽出来，语义从「代理好了吗」变成「有路能走后端吗」。
+   * ★ 为什么必须单独抽出来（2026-09-30 的真 bug）★
+   *   嵌入块原先直接读 `plugin.boot.status.ok` —— 那是**内置代理**的启动状态。
+   *   于是「配了可直连的地址、但代理没起来」时，嵌入块会**直接拒绝渲染**
+   *   并显示「网盘通道未就绪：代理未启动」，而同一时刻直连完全正常。
+   *   更隐蔽的是时序：onload 同步段结束时代理才**开始**异步启动，
+   *   而文档里的嵌入块可能在这之前就渲染了。
+   *
+   *   ⇒ 代理已整体删除，这个判据也简化成「有没有地址」这一件事。
    */
-  canSkipProxy() {
-    const u = String((this.settings && this.settings.serverUrl) || "").trim();
-    return !!u;
+  channelReady() {
+    return !!String((this.settings && this.settings.serverUrl) || "").trim();
   }
 
   async ensureLogin() {

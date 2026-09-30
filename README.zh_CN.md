@@ -166,7 +166,6 @@ node tools/build.js --repo
 | 网盘地址 | NebulaDisk 的访问地址 | **自动推断**（见下） |
 | 用户名 | 网盘账号 | `tao_zhang` |
 | 密码 | 用于自动登录，存在思源本地插件数据里 | 空 |
-| 代理端口 | 本地网络通道端口，冲突时可改 | `6810` |
 | 启动时自动登录 | 开启后思源启动即登录网盘 | 开 |
 
 > **网盘地址为什么是「自动推断」？**
@@ -187,69 +186,50 @@ node tools/build.js --repo
 
 ---
 
-## 四、为什么需要一个「网络通道」
+## 四、网络通道：直连
 
-这一节解释插件的核心设计，遇到问题时看这里。
+这一节解释插件的核心设计，遇到「连不上 / 预览不了」时先看这里。
 
-### 问题
+### 现状：直连，不需要本地通道（2026-09-30 起）
 
-思源和 NebulaDisk 是两个独立的服务：
+思源和 NebulaDisk 确实是两个独立服务（:6806 与 :8089，不同 origin = 跨域）。
+但网盘侧已经具备直连所需的一切：
+
+- **后端已开启 CORS**（`allow_origins=["*"]`、`allow_credentials=False`）⇒ 跨域 `fetch` 能读到响应体；
+- **登录下发 Bearer token** ⇒ 会话不依赖 Cookie，`SameSite=lax` 不再是障碍；
+- **预览走签名直链**（`/api/raw/...?exp=…&sig=…`）⇒ `<img>` / `<video>` / 下载链接无需 Cookie。
+
+于是插件**直接请求网盘地址**，只多带一个 `Authorization: Bearer <token>` 头：
 
 ```
-思源 WebView      http://<同一台机器>:6806
-NebulaDisk        http://<同一台机器>:8089
-                  ↑ 不同端口 = 不同 origin = 跨域
+插件（思源渲染进程） ──fetch──────────────────────────► NebulaDisk :8089
+                     Authorization: Bearer <token>
 ```
 
-而 NebulaDisk 侧：
+**没有本地转发服务、没有端口、没有第二个进程** —— 也就没有「网盘活着、通道却死了」这种状态。
 
-- **没有配置 CORS 中间件** —— 浏览器发起的跨域 `fetch` 读不到响应体
-- **会话 Cookie 是 `SameSite=lax`** —— 跨站请求根本不会带上 Cookie
+> **★★ 旧版本的内置代理已在 2026-09-30 整体删除 ★★**
+> 早期版本因为网盘没有 CORS 头，会在 `127.0.0.1:6810` 起一个小 HTTP 转发层
+> （`src/proxy.js`）：替插件保管会话 Cookie、限制转发路径白名单、剥离
+> `X-Frame-Options`/CSP 并改写预览 HTML 里的资源地址。
+>
+> 删除理由：
+>   1. 直连端到端可用，代理是**纯增的失败面**（会死、会占端口、会被旧进程复用）；
+>   2. 它的**启动状态**曾（错误地）被当成「通道就绪」的判据 ⇒
+>      在直连明明正常时，笔记里的嵌入块却拒绝渲染，显示
+>      「网盘通道未就绪：代理未启动」；
+>   3. 它唯一不可替代的职责（改写预览 HTML 的资源地址）在直连下并不需要 ——
+>      iframe 直接指向网盘自身，同源。
+>
+> 想回看实现：`git log -- src/proxy.js`。
 
-所以插件的 JavaScript **无法**直接调用网盘 API。这不是配置问题，是浏览器的安全模型决定的。
+### 仍然存在的跨域注意事项
 
-### 解法：插件内置一个本地转发层
-
-插件启动时会在 `127.0.0.1:6810` 起一个极小的 HTTP 服务（`src/proxy.js`），它负责：
-
-1. **保管会话 Cookie** —— 登录时把 `Set-Cookie` 截下来存住，后续请求再补回去。
-   这样就彻底绕开了 `SameSite=lax` 的限制，也不需要给网盘加 CORS 头。
-2. **转发白名单内的路径** —— 只有 `/api/`、`/preview/`、`/cad/`、`/website/`、`/s/` 这几个前缀能过。
-   代理**不是**开放转发器，否则思源的同源位置会变成可被文档内脚本利用的 SSRF 跳板。
-3. **剥离 `X-Frame-Options` / CSP**，并改写 HTML 里的资源地址，
-   让 kkFileView、cad-viewer 的页面能被 iframe 正常嵌入。
-
-> **为什么绑 `127.0.0.1` 就够了？**
-> 插件的 JS 无论思源跑在宿主机还是 Docker 容器里，**都在思源进程内执行**，
-> 所以对它来说 `127.0.0.1` 永远指向思源自己所在的环境，始终可达。
-
-### 如果通道起不来
-
-思源的 Electron 渲染进程如果关闭了 `nodeIntegration`，插件就没法自己起服务。
-此时按设置页里的提示操作：
-
-**方案：用「JS 代码片段」启动代理**
-
-1. 设置页会给出可一键复制的代码片段
-2. 思源 → 设置 → 外观 → 代码片段 → JS → 新建，粘贴
-3. 保存并开启
-
-这段代码做的事和插件内置的完全一样，只是改由代码片段机制执行。
-
-**备选方案：用 nginx 做统一入口**（适合 NAS 上已有 nginx 的情况）
-
-把 `/nb` 反代到 NebulaDisk，让两者变成同源：
-
-```nginx
-location /nb/ {
-    proxy_pass http://<网盘主机>:8089/;
-    proxy_set_header Host $host;
-    # 关键：Cookie 的 Path 要重写，否则浏览器不会回传
-    proxy_cookie_path / /nb/;
-}
-```
-
-这种方案下插件不需要本地代理，但需要你把思源也放到同一个 nginx 后面。
+- 会话是 `sessionStorage` 里的 **Bearer token**，不是 Cookie
+  （网盘的 Cookie 是 `SameSite=lax`，跨站本来也不会带上）。
+- 网盘返回的地址可能用**容器内主机名**（例如 `nebula:8088`），
+  必须经 `browserReachableUrl()` 改写成配置的 `serverUrl` 才能给浏览器用。
+- iframe 内容仍是跨 origin（只做展示，不读其内部 DOM）。
 
 ---
 
@@ -277,13 +257,13 @@ location /nb/ {
 # 静态检查：语法 + import 目标 + 导出符号匹配 + 清单完整性
 node test/syntax.check.js
 
-# 代理单元测试（22 条：白名单 / Cookie 保管 / HTML 改写 / 错误可读性）
-node test/proxy.test.js
-
 # 嵌入块解析测试
 node test/embed.test.js
 
-# 全量（21 个套件，含反向注入测试）
+# 端到端集成（对着一个模拟网盘跑直连链路）
+node test/e2e.test.js
+
+# 全量（含反向注入测试）
 node tools/run-all-tests.cjs
 ```
 
@@ -316,20 +296,20 @@ siyuan-nebuladisk/
 ├── README.zh_CN.md     中文说明（本文件）
 ├── DEVELOPMENT.md      ★ 开发技术沉淀（架构决策 / Bug 根因 / 环境陷阱）
 ├── src/
-│   ├── proxy.js        ★ 本地转发层：Cookie 保管、白名单、HTML 改写
+│   ├── diag.js         ★ 诊断日志与路径工具（原本在 proxy.js 里，代理删除后独立）
 │   ├── api.js          NebulaDisk API 客户端 + 文件类型路由 + 格式化
 │   ├── tree.js         侧边栏文件树（需求 ①）
 │   ├── viewer.js       预览与在线编辑页签（需求 ②）
 │   ├── embed.js        笔记内嵌的渲染器（需求 ③）
+│   ├── external.js     ★ 对外能力契约（供其它插件消费，网盘不认识消费方）
 │   └── icons.js        自定义图标与文件类型色块
 ├── i18n/
 │   └── zh_CN.json      中文文案
 ├── dist/               构建产物（打包 zip 时取这里的 index.js / index.css）
 ├── test/               单元与契约测试
 │   ├── syntax.check.js 静态自检
-│   ├── proxy.test.js   代理单元测试
 │   ├── embed.test.js   嵌入块解析测试
-│   ├── e2e.test.js     端到端集成
+│   ├── e2e.test.js     端到端集成（直连）
 │   ├── verify-*.cjs    契约/行为断言
 │   └── reverse-*.cjs   ★ 反向注入测试（证明正向断言能变红）
 └── tools/
@@ -362,8 +342,10 @@ OnlyOffice 编辑器**外壳**能出来、只有正文失败，说明是 OnlyOff
 首次预览需要转换（Office/压缩包/CAD 尤其慢），大文件几十秒很正常。
 插件会在 6 秒后提示「首次转换较慢」。若一直不返回，检查 NebulaDisk 容器的内存占用。
 
-**端口 6810 被占用**
-改设置里的「代理端口」，重启思源生效。
+**连不上 / 一直提示「未配置网盘地址」**
+网盘地址填错了，或没填。设置页的「通道自检」会逐条把
+「地址 → 连通性探活 → 登录与列盘」的结果摆出来，先看它。
+（旧版本在这里会提示「代理未启动」—— 内置代理已删除，不再有这个概念。）
 
 **中文文本预览乱码**
 插件按 UTF-8 → GBK → GB18030 → Big5 → UTF-16 顺序回退解码。

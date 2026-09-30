@@ -50,7 +50,7 @@ import {
   //     仍在直接验证它的行为）。若日后恢复网格：把这一行加回即可。
 } from "./api.js";
 import { typeIconEl } from "./icons.js";
-import { diag } from "./proxy.js";
+import { diag } from "./diag.js";
 import { insertEmbedIntoDoc } from "./embed.js";
 
 /* -------------------------------------------------------------------------
@@ -314,7 +314,6 @@ export class FileTree {
     this.expanded = new Set();     // 展开过的节点 key，用于刷新后恢复
     this.filter = "";
     this.destroyed = false;
-    this.proxyOk = true;
     this.sessionOk = true;
     this._renderToken = 0;
     /** bootstrap 重入保护（见 bootstrap） */
@@ -987,7 +986,7 @@ export class FileTree {
     this.resultsEl.style.display = "none";
     this.el.appendChild(this.resultsEl);
 
-    // ---- 状态条（代理/会话异常时显示）----
+    // ---- 状态条（会话异常时显示）----
     this.banner = document.createElement("div");
     this.banner.className = "nb-tree-banner";
     this.banner.style.display = "none";
@@ -1054,26 +1053,12 @@ export class FileTree {
     }
     this._bootstrapping = true;
     try {
-      // ★ 通道就绪判定必须分通道看 ★
-      //   代理通道：代理是异步启动的，要给它时间（旧版只等这一条）。
-      //   直连通道：根本不需要代理 —— 只要配了 serverUrl 就能直接开跑。
-      //   早先这里无条件等 `boot.status.ok`，而 boot 是「代理启动进度」，
+      // ★ 这里以前要「等代理起来」★
+      //   直连通道不需要任何本地服务 —— 只要配了 serverUrl 就能直接开跑。
+      //   早先无条件等 `boot.status.ok`（那是**代理**的启动进度），
       //   于是配了可直连的地址、但代理因为端口占用起不来时，
-      //   面板会一直卡在「通道未就绪」——明明网络是通的。
-      if (!this.plugin.canSkipProxy || !this.plugin.canSkipProxy()) {
-        for (let i = 0; i < 20; i++) {
-          const st = this.plugin.boot ? this.plugin.boot.status : { ok: false };
-          if (st.ok) break;
-          if (i === 19) {
-            // 代理没起来，但可能仍能直连 —— 交给 ensureLogin 去试，
-            // 只有在它也确实失败时才提示用户。
-            diag(`[tree] 代理未就绪（${st.detail}），改用直连通道尝试`);
-            break;
-          }
-          await sleep(400);
-          if (this.destroyed) return;
-        }
-      }
+      //   面板会一直卡在「通道未就绪」—— 明明网络是通的。
+      //   代理整体删除后，直接进入登录检查即可。
 
       // 确保登录
       const ok = await this.plugin.ensureLogin();
@@ -2187,24 +2172,37 @@ export class FileTree {
   }
 
   /**
-   * 复制「直链」——带签名的 /api/raw 地址，粘到浏览器/别的设备直接能下。
+   * 复制「直链」—— **永久短链**优先，粘到浏览器/别的设备直接能看能下。
    *
    * ★ 三个必须过的关（缺一个用户就拿不到能用的链接）：
    *
-   *   1) **必须取签名直链，不能自己拼 `/api/raw/<name>?mount=&path=`**。
-   *      后端 rawlink 路由是要校验 `exp` + `sig` 的，自己拼出来的是 403。
-   *      ⇒ 走 API.signedRawUrl()，它内部问 /api/preview 拿签名。
+   *   1) **不能自己拼地址**。短链 `/f/<token>` 的 token 由后端签发
+   *      （`POST /api/shortlink`，同一文件幂等复用同一个 token）；
+   *      后端没升级时 `API.directLinkUrl()` 会静默回退到带签名的
+   *      `/api/raw/…?exp=..&sig=..`（自己拼同样 403）。
+   *      ⇒ 一律走 `API.directLinkUrl()`，别在这里碰 URL 细节。
    *
-   *   2) **必须过 browserReachableUrl()**。后端 make_raw_url() 用的是
+   *   2) **必须过 browserReachableUrl()**。后端 `make_raw_url()` 用的是
    *      `_internal_origin()` = NEBULA_BASE_URL，典型值 `http://nebula:8088`
    *      —— 这个主机名只有 docker 网内的 OnlyOffice/kkFileView 能解析。
    *      原样复制给用户，粘到浏览器就是 ERR_NAME_NOT_RESOLVED。
    *      这正是用户反馈过的那条打不开的直链：
    *        http://nebula:8088/api/raw/1.2.14.TFDF-6%23%20F%E5%90%91.STEP?...
-   *      signedRawUrl() 已经把 browserReachableUrl 包在里面了，这里不用重复。
+   *      `directLinkUrl()` → `shortLinkUrl()` / `signedRawUrl()` 里
+   *      都已经包了主机改写，这里不用重复。
    *
-   *   3) **目录没有直链**。rawlink 只服务文件；对目录就要明确拒绝，
-   *      否则会拿回一个指向目录的 404 链接，用户以为复制成功了。
+   *   3) **目录没有直链**。短链与 rawlink 都只服务文件；对目录就要明确拒绝，
+   *      否则会拿回一个指向目录的坏链接，用户以为复制成功了。
+   *
+   * ★ 2026-09-30：改用 `directLinkUrl()`（永久短链）★
+   *   用户原话：「两处复制直连 复制出来的路径不一样。需要调整一下」
+   *         「把「复制直链」也换成这种永久短链」
+   *   原来两处各自拿 `signedRawUrl`，同一文件出来两条 330 字符、
+   *   sig 各不相同的长地址（dl 进了 HMAC ⇒ 必然两份凭证）。
+   *   现在两个入口共用**同一条 41 字符短链**：
+   *     · 本方法  → 打开型（inline），地址就是 `/f/<token>`
+   *     · 预览栏  → 下载型，同一条 + `?dl=1`
+   *   语义（打开 vs 下载）**不变**，这是用户 2026-09-23 明确裁定过的。
    */
   async copyRawLink(entry) {
     if (entry.isDir) {
@@ -2219,9 +2217,11 @@ export class FileTree {
       return;
     }
     try {
-      const url = await API.signedRawUrl(this.currentMount, entry.path);
+      const url = await API.directLinkUrl(this.currentMount, entry.path, {
+        name: entry.name || "",
+      });
       if (!url) throw new Error("后端未返回直链");
-      copyText(url, "直链已复制");
+      copyText(url, "永久直链已复制");
     } catch (e) {
       showToast(`取直链失败：${e.message}`);
     }
@@ -2710,27 +2710,10 @@ export class FileTree {
     if (this.banner) this.banner.style.display = "none";
   }
 
-  onProxyDown(detail) {
-    this.proxyOk = false;
-    this.showBanner(`网络通道未就绪：${detail}`, "warn", () => this.plugin.openSetting());
-  }
-
-  onProxyUp() {
-    this.proxyOk = true;
-    this.hideBanner();
-  }
-
   onSessionLost() {
     this.sessionOk = false;
     this.renderLoginPrompt();
   }
-}
-
-/* -------------------------------------------------------------------------
- * 工具
- * ---------------------------------------------------------------------- */
-function sleep(ms) {
-  return new Promise((r) => setTimeout(r, ms));
 }
 
 function escapeHtml(s) {

@@ -19,7 +19,9 @@ const path = require("path");
 const fs = require("fs");
 const vm = require("vm");
 
-const { NebulaProxy } = require("../src/proxy.js");
+/* 注意：本测试**只走直连通道**。
+ * 历史上这里还 require 了 src/proxy.js 的 NebulaProxy 起一个本地代理，
+ * 自 2026-09-30 内置代理整体删除后，那条链路已不存在 —— 测的就是直连。 */
 
 /* -------------------------------------------------------------------------
  * 模拟的 NebulaDisk 后端
@@ -284,15 +286,13 @@ function installBOM(apiPort) {
 
   /**
    * 插件的「实例对象」。
-   * api.js 通过 window.__nebuladiskPlugin 读两样东西：
-   *   · settings.serverUrl   —— 直连目标地址
-   *   · boot.noNode          —— 当前环境没有 node 能力（浏览器端思源）
-   * 两者都要给对，pickChannel() 才会稳定选中直连。
+   * api.js 通过 window.__nebuladiskPlugin 只读一样东西：
+   *   · settings.serverUrl —— 请求目标（直连是唯一通道）
+   * 给对了，serverBase() 就返回模拟网盘地址。
    */
   global.window = {
     __nebuladiskPlugin: {
-      settings: { serverUrl: SERVER, proxyPort: 6810 },
-      boot: { noNode: true },
+      settings: { serverUrl: SERVER },
     },
   };
   globalThis.window = global.window;
@@ -340,6 +340,57 @@ function installBOM(apiPort) {
  *   同名形参 ⇒ 静默拿到 undefined，排查成本极高。
  * ---------------------------------------------------------------------- */
 function loadApiModule() {
+  /**
+   * 把 src/ 下的 ESM 文件用同一套轻量转译跑起来，供 require 使用。
+   *
+   * ★ 为什么需要它（2026-09-30）★
+   *   以前 api.js 只 import 了 ./proxy.js，而 proxy.js 是 **CommonJS**
+   *   （module.exports = {...}），Node 的 require 能直接加载。
+   *   代理删除后 api.js 改为 import ./diag.js —— 那是 **ESM**，
+   *   Node require 会直接抛 `SyntaxError: Unexpected token 'export'`。
+   *   ⇒ 相对依赖也必须走同一套转译，不能直接交给 Node require。
+   */
+  const srcCache = new Map();
+  function loadSrcModule(abs) {
+    if (srcCache.has(abs)) return srcCache.get(abs);
+    let code = fs.readFileSync(abs, "utf8");
+    code = code.replace(
+      /^import\s*\{([^}]*)\}\s*from\s*["']([^"']+)["'];?[ \t]*$/gm,
+      (_full, ns, mod) => ns
+        .split(",")
+        .map((s) => s.trim())
+        .filter(Boolean)
+        .map((one) => {
+          const [imp, local] = one.split(/\s+as\s+/);
+          const L = (local || imp).trim();
+          return `const ${L} = require(${JSON.stringify(mod)}).${imp.trim()};`;
+        })
+        .join("\n"),
+    );
+    const exported = [];
+    const re2 = /^export\s+(?:async\s+)?(?:function|class|const|let|var)\s+([A-Za-z_$][\w$]*)/gm;
+    let mm;
+    while ((mm = re2.exec(code))) exported.push(mm[1]);
+    code = code.replace(/^export\s+(?=(?:async\s+)?(?:function|class|const|let|var)\s)/gm, "");
+    code += `\nmodule.exports = { ${exported.join(", ")} };`;
+
+    const m2 = { exports: {} };
+    const c2 = vm.createContext({
+      module: m2, exports: m2.exports, require: srcRequire, console,
+      window: global.window, sessionStorage: global.sessionStorage,
+      fetch: global.fetch, setTimeout, clearTimeout,
+    });
+    vm.runInContext(code, c2, { filename: abs });
+    srcCache.set(abs, m2.exports);
+    return m2.exports;
+  }
+
+  /* ---- 3) 按 src/ 解析相对 require（含 ESM 转译）---- */
+  const srcRequire = (id) =>
+    /^\.\.?\//.test(id)
+      ? loadSrcModule(path.resolve(__dirname, "../src", id))
+      : require(id);
+
   let src = fs.readFileSync(path.resolve(__dirname, "../src/api.js"), "utf8");
 
   // ---- 1) import { a, b as c } from "./m";  →  逐符号 require 解构 ----
@@ -364,10 +415,6 @@ function loadApiModule() {
   while ((m = re.exec(src))) names.push(m[1]);
   src = src.replace(/^export\s+(?=(?:async\s+)?(?:function|class|const|let|var)\s)/gm, "");
   src += `\nmodule.exports = { ${names.join(", ")} };`;
-
-  // ---- 3) 按 src/ 解析相对 require ----
-  const srcRequire = (id) =>
-    require(/^\.\.?\//.test(id) ? path.resolve(__dirname, "../src", id) : id);
 
   const mod = { exports: {} };
   const context = vm.createContext({
@@ -417,25 +464,10 @@ async function check(name, fn) {
   await new Promise((r) => api.listen(0, "127.0.0.1", r));
   const apiPort = api.address().port;
 
-  /**
-   * ★ 代理仍然起着，但**不是被测通道** ★
-   *   被测链路是直连（NAS 部署的真实形态）。这里保留代理实例只为两件事：
-   *     1. 验证代理类在同一进程里不会干扰直连（端口冲突等）
-   *     2. 让 proxy.stop() 在收尾时被真正调用（资源释放有回归）
-   *   直连的地址由 installBOM 注入的 settings.serverUrl 决定。
-   */
-  const proxy = new NebulaProxy({
-    target: `http://127.0.0.1:${apiPort}`,
-    port: 0,
-    host: "127.0.0.1",
-    log: () => {},
-  });
-  const proxyPort = await proxy.start();
-
   installBOM(apiPort);
   const A = loadApiModule();
 
-  console.log(`\n模拟网盘（直连目标） :${apiPort}   备用代理 :${proxyPort}\n`);
+  console.log(`\n模拟网盘（直连目标） :${apiPort}\n`);
 
   console.log("【会话链路】");
   await check("登录成功，返回 display 字段", async () => {
@@ -656,7 +688,6 @@ async function check(name, fn) {
     assert.strictEqual(typeof A.setUnauthorizedHandler, "function");
   });
 
-  await proxy.stop();
   api.close();
 
   console.log("\n" + "=".repeat(50));

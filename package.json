@@ -1,6 +1,6 @@
 {
   "name": "siyuan-nebuladisk",
-  "version": "1.0.5",
+  "version": "1.0.6",
   "description": "在思源笔记中集成 NebulaDisk 网盘：侧边栏浏览、在线预览与编辑、笔记内嵌",
   "private": true,
   "type": "commonjs",
@@ -13,7 +13,7 @@
     "verify": "node tools/verify-install.js",
     "loader": "node tools/sim-loader.js",
     "load": "node tools/sim-load.js",
-    "test": "node test/syntax.check.js && node test/proxy.test.js && node test/embed.test.js && node test/e2e.test.js && node tools/sim-loader.js && node tools/sim-load.js",
+    "test": "node test/syntax.check.js && node test/embed.test.js && node test/media.test.js && node test/e2e.test.js && node tools/sim-loader.js && node tools/sim-load.js",
     "test:all": "node tools/run-all-tests.cjs",
     "check": "node test/syntax.check.js"
   }

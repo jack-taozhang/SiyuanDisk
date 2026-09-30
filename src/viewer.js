@@ -20,9 +20,9 @@
  *        → kkFileView /preview/onlinePreview?url=…
  *
  * ★ iframe 的跨域现实 ★
- *   代理端口与思源端口不同，所以 iframe 内容严格说仍是跨 origin。
+ *   网盘端口（8089）与思源端口（6806）不同，所以 iframe 内容严格说仍是跨 origin。
  *   但 kkFileView / cad-viewer 都是「无状态渲染」，不需要读 iframe 内部 DOM，
- *   只是展示，因此可用。代理已剥离 X-Frame-Options / CSP 并改写资源地址。
+ *   只是展示，因此可用。网盘侧对预览地址未下发 X-Frame-Options / CSP（实测）。
  * ========================================================================== */
 
 import { showMessage } from "siyuan";
@@ -65,6 +65,8 @@ import {
  *      「导入了 webDiskUrl 但从未使用」，把套件刷红。
  */
 import { insertEmbedIntoDoc } from "./embed.js";
+import { probeImageUrl, mountBlobImage, imageFailMessage, revokeBlobUrl } from "./media.js";
+import { diag } from "./diag.js";
 
 export class Viewer {
   /**
@@ -82,6 +84,11 @@ export class Viewer {
     this.destroyed = false;
     this._ooEditor = null;
     this._ooScript = null;
+    /**
+     * 本页签自己创建的 blob URL（图片自愈时产生）。
+     * 每次重渲染前回收，避免反复点「重新加载」把整张图堆在内存里。
+     */
+    this._imgBlobs = [];
   }
 
   /* =====================================================================
@@ -90,6 +97,10 @@ export class Viewer {
   async render() {
     if (this.destroyed) return;
     this.el.classList.add("nb-viewer");
+    // ★ 回收上一轮图片自愈用掉的 blob ★
+    //   必须放在清空 DOM **之前**：清空会把正在加载的 <img> 摘掉，
+    //   那会中断它的加载（进而触发 onerror），而 blob 引用也要在这时释放。
+    this._releaseImgBlobs();
     this.el.innerHTML = "";
 
     this.renderToolbar();
@@ -187,32 +198,114 @@ export class Viewer {
   /* ---- ① 图片 ---- */
   async renderImage() {
     // ★ 必须用 signedDownloadUrl（异步拿签名直链）★
-    //   直连通道下 /api/download 认 Cookie，而思源与网盘跨源 ⇒ 401；
-    //   旧代码还用 proxyBase() ⇒ 浏览器打 127.0.0.1:6810 ⇒ 连接被拒。
+    //   直连下 /api/download 认 Cookie，而思源与网盘跨源 ⇒ 401；
+    //   必须走 /api/raw?…&sig=… 签名直链。
     //   这正是任务⑧「图片打不开」的根因。
     const url = await API.signedDownloadUrl(this.mount, this.path, true);
     this.body.innerHTML = "";
     const box = document.createElement("div");
     box.className = "nb-media-wrap";
-    const img = document.createElement("img");
-    img.className = "nb-image";
-    img.alt = this.name;
-    img.src = url;
-    img.onerror = () => this.showError(new Error("图片加载失败"));
-    // 点击缩放
+    this.attachImage(box, url);
+    this.body.appendChild(box);
+  }
+
+  /** 登记本页签产生的 blob URL（由创建者回收，避免误伤别的页签） */
+  _rememberBlob(u) {
+    if (u) this._imgBlobs.push(String(u));
+    return u;
+  }
+
+  /** 回收本页签自己的全部 blob URL */
+  _releaseImgBlobs() {
+    for (const u of this._imgBlobs.splice(0)) revokeBlobUrl(u);
+  }
+
+  /** 给图片绑「点击缩放」（自愈替换元素后要重新绑） */
+  _bindZoom(img) {
     let zoom = false;
     img.onclick = () => {
       zoom = !zoom;
       img.classList.toggle("is-zoom", zoom);
     };
-    box.appendChild(img);
-    this.body.appendChild(box);
+    return img;
+  }
+
+  /**
+   * ★ 图片挂载：直链优先，失败复诊 + 自愈 ★（2026-09-30）
+   *
+   * 与 embed.js 的同名逻辑一一对应，完整理由见 src/media.js 顶部。
+   * 要点：`img.onerror` **不能**直接等于「图片坏了」——
+   *   · 元素被移除（点工具栏「重新加载」、切换文件）会中断加载并触发 error，
+   *     这时 URL 完全正常，属于误报；
+   *   · 真失败也要先复诊拿到状态码，再决定怎么说。
+   *
+   * @param {HTMLElement} container 图片容器
+   * @param {string} url 签名直链
+   */
+  attachImage(container, url) {
+    const img = document.createElement("img");
+    img.className = "nb-image";
+    img.alt = this.name;
+    img.onerror = () => {
+      // 已脱离文档 ⇒ 加载被中断，不是真失败（旧代码在这里直接报错，是误报源）
+      if (!img.isConnected) return;
+      void this.recoverImage(img, url);
+    };
+    img.src = url;
+    this._bindZoom(img);
+    container.appendChild(img);
+  }
+
+  /**
+   * 图片加载失败的复诊与自愈 —— 见 attachImage 的说明。
+   * @param {HTMLImageElement} img 触发 error 的元素
+   * @param {string} url 它加载失败的签名直链
+   */
+  async recoverImage(img, url) {
+    diag(`[viewer] 图片 onerror，开始复诊：${url}`);
+    const probe = await probeImageUrl(url, "viewer 图片");
+    diag(`[viewer] 图片复诊（签名直链）：${probe.detail}`);
+
+    // 直链其实取得到 ⇒ 转 blob 挂回去
+    if (probe.ok && probe.blob) {
+      const next = mountBlobImage(img, probe.blob, "nb-image", img.alt);
+      this._rememberBlob(next.dataset.nbBlob);
+      // 绝不再复诊，避免无限递归
+      next.onerror = () => diag("[viewer] 图片自愈后仍失败（blob 无法解码）");
+      this._bindZoom(next);
+      diag(`[viewer] 图片自愈成功（签名直链 → blob，${probe.bytes} 字节）`);
+      return;
+    }
+
+    // 认证兜底链路：/api/download 认 Bearer，不依赖 URL 签名
+    let apiErr = "";
+    try {
+      const blob = await API.downloadBlob(this.mount, this.path, true);
+      const next = mountBlobImage(img, blob, "nb-image", img.alt);
+      this._rememberBlob(next.dataset.nbBlob);
+      next.onerror = () => diag("[viewer] 图片自愈后仍失败（blob 无法解码）");
+      this._bindZoom(next);
+      diag(`[viewer] 图片自愈成功（认证兜底 /api/download，${blob.size} 字节）`);
+      return;
+    } catch (e) {
+      apiErr = (e && e.message) || String(e);
+      diag(`[viewer] 图片认证兜底也失败：${apiErr}`);
+    }
+
+    // 都不通 ⇒ 说真话（不再写「签名可能已过期」）
+    const msg = imageFailMessage(
+      { ...probe, detail: probe.detail + (apiErr ? `；认证链路：${apiErr}` : "") },
+      { viaApi: true },
+    );
+    diag(`[viewer] 图片加载最终失败：${msg}`);
+    // 复诊期间可能已切换文件/关掉页签 ⇒ 别再动 DOM
+    if (!img.isConnected || this.destroyed) return;
+    this.showError(new Error(msg));
   }
 
   /* ---- ① 视频 ---- */
   async renderVideo() {
-    // 同 renderImage：必须走签名直链（跨源 /api/download 会 401；
-    // 旧的 proxyBase() 会打到 127.0.0.1:6810 直接连不上）
+    // 同 renderImage：必须走签名直链（跨源 /api/download 会 401）
     const url = await API.signedDownloadUrl(this.mount, this.path, true);
     const v = document.createElement("video");
     v.className = "nb-video";
@@ -588,22 +681,41 @@ export class Viewer {
    *   · **本方法**（预览栏按钮）「复制直链」 = **下载**
    *     —— 粘到浏览器/下载器里应该触发下载（attachment）。
    *
-   *   为什么必须走后端签发而不是在前端给 URL 加 `&dl=1`：
-   *     后端把 dl 并入了 HMAC 签名串（见 nebula `routers/rawlink.py` 的
-   *     `_wants_download` / `webutil._raw_token(..., dl=)`）。
-   *     前端手动追加 ⇒ sig 与实参不匹配 ⇒ **恒 403**。
-   *     所以要传 `download` 让后端签出一份带 dl 的链接。
-   *     （已实测：v2 签名把 dl 并入 HMAC 输入，篡改必 403。）
+   * ★★ 2026-09-30：两处收敛到**同一条永久短链**（用户要求）★★
    *
-   *   signedRawUrl(mount, path, true) 已经内含 browserReachableUrl()，
-   *   主机名改写（nebula:8088 → 192.168.193.70:8089）不用在这里重复做。
+   *   用户原话：「两处复制直连 复制出来的路径不一样。需要调整一下」
+   *            「把「复制直链」也换成这种永久短链」
+   *
+   *   改前（同一个文件出来两条毫不相干的长地址，看着就是 bug）：
+   *     右键  /api/raw/<名>?…&sig=14aea4…        330 字符，inline
+   *     预览  /api/raw/<名>?…&sig=6cec41…&dl=1   335 字符，attachment
+   *   （sig 不同是必然的：`dl` 并入 HMAC ⇒ 两处签的是两份凭证。）
+   *
+   *   改后（**同一条 41 字符短链**，下载只表现为后缀）：
+   *     右键  /f/N-MAJI5zBjO2                       41 字符，inline
+   *     预览  /f/N-MAJI5zBjO2?dl=1                  46 字符，attachment
+   *
+   * ★ 为什么短链可以前端拼 `?dl=1`，而签名直链绝对不行 ★
+   *   `/api/raw` 的凭证是 `sig`，且 `dl` **并入了 HMAC 输入**
+   *   （见 nebula `routers/rawlink.py` 的 `_wants_download` /
+   *   `webutil._raw_token(..., dl=)`）⇒ 前端手加 `&dl=1` 必 403。
+   *   而 `/f/<token>` 的凭证是**路径里的 token**，`dl` 只是请求时参数
+   *   （`short_open(token, request, dl="")`）⇒ 前端拼它是合法的。
+   *   这个拼接统一在 `api.js` 的 `withDl()` 里做，本方法不碰 URL 细节。
+   *
+   * `API.directLinkUrl()` 内部已包 `browserReachableUrl()`（主机名改写
+   * nebula:8088 → 192.168.193.70:8089）与「短链失败回退签名链」，
+   * 所以这里不用重复做任何 URL 处理。
    */
   async copyLink() {
     try {
-      const abs = await API.signedRawUrl(this.mount, this.path, true);
+      const abs = await API.directLinkUrl(this.mount, this.path, {
+        download: true,
+        name: this.name,
+      });
       if (!abs) throw new Error("后端未返回直链");
       this.copy(abs);
-      showMsg("已复制下载直链");
+      showMsg("已复制永久下载直链");
     } catch (e) {
       showMsg(`获取直链失败：${e.message}`);
     }

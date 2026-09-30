@@ -79,11 +79,13 @@ function exportsOf(src) {
   if (/export\s+default\s/.test(src)) names.add("default");
 
   /*
-   * ★ CommonJS 形式（src/proxy.js 就是这种）
+   * ★ CommonJS 形式
    *   module.exports = { A, B }        → 导出 A、B
    *   module.exports.X = X             → 导出 X
    *   module.exports = X               → 导出 default
    * 不识别的话会报「用了但没导出」的假阳性。
+   * （历史上 src/proxy.js 是这种写法；该文件已于 2026-09-30 随内置代理一起删除，
+   *   本分支保留着，供今后新增的 CJS 风格模块使用。）
    */
   const cjsObj = src.match(/module\.exports\s*=\s*\{([^}]*)\}/);
   if (cjsObj) {
@@ -287,30 +289,6 @@ for (const f of files) {
   }
 }
 if (deadCount === 0) ok("没有无人引用的导出");
-
-// proxy.js 是 CommonJS（module.exports），单独查一遍
-{
-  const p = path.join(ROOT, "src", "proxy.js");
-  if (fs.existsSync(p)) {
-    const src = fs.readFileSync(p, "utf8");
-    const m = /module\.exports\s*=\s*\{([^}]*)\}/.exec(src);
-    if (m) {
-      const names = m[1].split(",").map((s) => s.trim().split(":")[0].trim()).filter(Boolean);
-      let dead = 0;
-      for (const n of names) {
-        const re = new RegExp(`\\b${n}\\b`, "g");
-        let count = 0;
-        for (const g of files) count += (fs.readFileSync(g, "utf8").match(re) || []).length;
-        if (count <= 1) {
-          // NebulaProxy 由 index.js 用 require 动态取，DEFAULTS/ALLOW_PREFIX/DENY_PREFIX 仅作文档用途
-          bad("src\\proxy.js", `module.exports 里的 ${n} 无人使用`);
-          dead++;
-        }
-      }
-      if (dead === 0) ok("proxy.js 导出的符号均被使用");
-    }
-  }
-}
 
 console.log("\n【⑤ 清单与资源】");
 const mf = path.join(ROOT, "plugin.json");
