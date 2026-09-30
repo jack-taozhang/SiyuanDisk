@@ -59,14 +59,27 @@ function pickBuiltDir() {
   return null;
 }
 
-/** --rebuild：先跑构建，保证包里是当前源码的产物 */
+/** --rebuild：先跑构建，保证包里是当前源码的产物
+ *
+ *  ★ 不要用 execFileSync / spawnSync ★
+ *    本机沙箱下**同步族子进程一律 EBUSY**（execSync / execFileSync / spawnSync
+ *    全废，spawnSync 还是「静默返回 null」这种最难查的形态）。
+ *    同源修复见 tools/run-all-tests.cjs、tools/check-secrets.cjs，
+ *    诊断脚本 .verify/diag-spawn.cjs。
+ *  ★ 这里不需要子进程：build.js 无 `require.main === module` 守卫、
+ *    结尾直接 main()，只从 argv[2] 取输出目标 ⇒ 在本进程内 require 即可，
+ *    行为等价（失败只设 process.exitCode），还省一次 node 启动。 */
 if (process.argv.includes("--rebuild")) {
-  console.log("→ 先重新构建（node tools/build.js --repo）…\n");
-  const { execFileSync } = require("child_process");
-  execFileSync(process.execPath, [path.join(__dirname, "build.js"), "--repo"], {
-    stdio: "inherit",
-    cwd: ROOT,
-  });
+  console.log("→ 先重新构建（tools/build.js --repo）…\n");
+  const BUILD_JS = path.join(__dirname, "build.js");
+  const savedArgv = process.argv;
+  process.argv = [process.execPath, BUILD_JS, "--repo"]; // build.js 读 argv[2] 当输出目标
+  try {
+    require(BUILD_JS);
+  } finally {
+    process.argv = savedArgv; // 复原，别把 --repo 泄漏给后面的逻辑
+  }
+  if (process.exitCode) process.exit(process.exitCode); // 构建失败就别打包了
   console.log("");
 }
 
