@@ -355,3 +355,52 @@ compose 还引用着不存在的文件 ⇒ Docker 会**创建同名目录** ⇒ 
 | `nebula-webutil-probe.py` | **本轮新增**：`probe_readable()` + 在 `_stream_file` 里的调用点 |
 | `nebula-shortlink-page-block.py` | 已刷新（1.2.3 版 `pages.py` 的统一链接块，含 `probe_readable` 的调用与 import 提示） |
 | `nebula-shares-compat.py` | 与前一轮相同（`shares.py` 兼容壳未改动） |
+
+---
+
+## 第三轮·补（2026-09-30 深夜）：分享落地页开局一片白（后端 1.2.4）
+
+用户报障：「目前 /S/ 分享 打开 是这样」（截图：整页被一块空白面板盖住，
+只剩顶栏 + 一个「关闭」按钮）。**跟插件无关，是网盘 Web 层的 CSS 事故。**
+
+### 真因：`hidden` 属性被作者样式盖掉（DOM 是对的，错在渲染）
+
+`[hidden] { display: none }` 只存在于 **UA 样式表**，
+而**作者样式**里任何 `display:` 声明都会把它盖掉 ——
+作者样式 > UA 样式，**不看特异性**：
+
+```html
+<div class="sh-viewer" id="sh-viewer" hidden>   <!-- 想默认不显示 -->
+```
+```css
+.sh-viewer { position: fixed; inset: 0; z-index: 40; display: flex; ... }
+```
+
+⇒ 预览浮层**永远显示**，把「文件名 + 预览/下载」卡片整个盖住；
+且 `viewer.hidden = true/false` **完全失效**（属性变了、渲染不变），
+所以"点关闭"也没用。
+
+⚠️ **为什么一直没被发现**：`/s/` 的既有测试只断言 HTTP 200 与 boot 数据存在，
+**没有任何一条断言碰过渲染**。这类「接口全绿、页面全白」的坑，
+靠 `e2e_links.py` 那种打 HTTP 的探针是**测不出来**的 —— 必须靠
+渲染级（截图/DOM 计算样式）或静态级判据。本次两者都补了。
+
+### 改法
+
+1. `web/css/share.css` + `web/css/app.css` 各加一行
+   `[hidden] { display: none !important; }`（`!important` 顺便对将来免疫）。
+2. 新增静态闸门 `nebula/tools/check_hidden_css.py`：**凡是**被页面引用的本地
+   样式表都必须含这条兜底；带 `--selftest`，已接进 `run_static_checks.sh` 第 4 步。
+   ⚠️ 判据为什么是"所有样式表"而不是"写了 hidden 属性的页面"：
+   JS 里 `el.hidden = true` 的目标在 HTML 里**往往没有** hidden 属性
+   （如链接面板的 `#qclear`），按属性筛会漏。
+
+### 验证方式（值得复用）
+
+用本机 Chrome 无头模式**真实渲染并截图**，与用户截图逐像素对照：
+```
+chrome --headless=new --disable-gpu --window-size=1088,620 \
+       --virtual-time-budget=8000 --screenshot=out.png <url>
+```
+★ `--dump-dom` 只能证明 **DOM 对**（本次它一直是对的），
+  要证明**渲染对**必须截图或读 `getComputedStyle`。
