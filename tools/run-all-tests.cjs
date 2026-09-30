@@ -5,8 +5,32 @@
  *   测试分散在 test/（单元/集成）与 tools/（模拟器里的契约测试），
  *   之前每次都靠手写 for 循环拼命令，容易漏掉 tools/ 那几个
  *   （实测漏过一次：_sim-embed-contract.cjs 123 条断言整批没跑）。
+ *
+ * ★★★ 2026-09-30 重写：spawnSync → spawn（本环境 spawnSync 恒 EBUSY）★★★
+ *
+ *   症状：`npm test` 出来「0 通过 / 25 失败」，25 个套件的"失败明细"**全是空的**。
+ *   真相：**25 个套件其实全绿**，是汇总器自己起不了子进程。
+ *
+ *   实测（.verify/diag-spawn.cjs）：
+ *     execSync      → EBUSY spawnSync C:\WINDOWS\system32\cmd.exe EBUSY
+ *     execFileSync  → EBUSY spawnSync …\node.exe EBUSY
+ *     spawnSync     → { status: null, error: 'EBUSY' }（不抛，静默给 null）
+ *     spawn (异步)  → ✅ 正常，close code=0
+ *   ⇒ 同一台机器上 **异步 spawn 好使、同步族全废**。
+ *
+ *   而这个失败模式特别毒：spawnSync 失败时 `status` 是 **null** 且
+ *   **不抛异常**，`r.stdout` 是空串 ⇒ 解析器拿不到任何计数 ⇒
+ *   走到 `if (pass === null) { pass = 0; fail = 1 }` 兜底 ⇒
+ *   25 套"全部失败"。看起来像"代码全崩了"，实际是"汇总器没跑起来"。
+ *
+ *   ⇒ 改成异步 spawn；并且把「起不了子进程」与「测试真的失败」**分开报告**，
+ *     再也不能混成同一个 ❌。同时以**退出码**为准（计数只作展示），
+ *     免得某个套件的输出格式一变就被判成 0 通过。
+ *
+ *   ★ 顺带补上漏挂的 test/external.test.js ★
+ *     （对外契约那 29 条断言从来没进过 npm test —— 又是"漏挂等于没有"）
  */
-const { spawnSync } = require("child_process");
+const { spawn } = require("child_process");
 const path = require("path");
 const fs = require("fs");
 
@@ -21,9 +45,14 @@ const SUITES = [
   //   详见 tools/check-secrets.cjs 顶部说明。
   ["tools/check-secrets.cjs", "★ 凭据闸门（明文口令）"],
   ["test/syntax.check.js", "静态检查（模块/导入/清单）"],
-  ["test/proxy.test.js", "代理单元测试"],
   ["test/embed.test.js", "嵌入块单元测试"],
+  ["test/media.test.js", "图片复诊/自愈单元测试（含反向注入）"],
   ["test/e2e.test.js", "端到端集成（直连通道）"],
+  // ★ 对外契约（`window.__nebuladiskPlugin.external`）★
+  //   ★ 2026-09-30 补挂：这套 29 条断言以前**从来没被 npm test 跑到过**。
+  //     它管的是画布侧唯一的接入面（含 v2 新增的 directLinkUrl），
+  //     漏挂等于这份契约完全没护栏。
+  ["test/external.test.js", "对外契约 v2（画布接入面 / directLinkUrl）"],
   // ★ 模拟「浏览器端思源」（NAS 场景，无 require/process/fs）。
   //   它锁的是**另一条通道**：浏览器端必须锁定直连、永不回退 127.0.0.1:6810；
   //   还管「容器内名 nebula:8088 → 浏览器可达主机」的改写、以及「打开网盘」深链。
@@ -39,7 +68,8 @@ const SUITES = [
   ["tools/_sim-tasks-9-10-12.cjs", "⑨⑩⑫ 回归契约"],
   // ★ 渲染冒烟：把真实 bundle 当模块跑起来，断言真的渲染出搜索框/图标/网格行高。
   //   其它套件都是「源码文本静态断言」，证明不了运行时行为，所以这一套必要。
-  //   缺 jsdom 时会自己跳过（输出「通过 0 失败 0」，不算失败）。
+  //   ★ 2026-09-30：缺 jsdom 时**已改为退出码 1**（原来输出「通过 0 失败 0」退出 0，
+  //     被汇总器计成"通过" ⇒ 这套冒烟**从来没跑过**）。所以它现在是硬依赖。
   ["tools/_sim-picker-render.cjs", "选择器搜索/网格图标渲染冒烟"],
   // ★ 任务20/26/27/28：菜单项增删 + 路径显示归一化。
   //   独立成一套，因为它横跨 tree/api/index/viewer/embed 五个文件，
@@ -78,52 +108,129 @@ const SUITES = [
   ["tools/verify-package.cjs", "交付包自检（#67）"],
 ];
 
-let totalPass = 0;
-let totalFail = 0;
-const rows = [];
-
-for (const [rel, desc] of SUITES) {
-  const abs = path.join(ROOT, rel);
-  if (!fs.existsSync(abs)) {
-    rows.push({ rel, desc, status: "缺失", pass: 0, fail: 0 });
-    totalFail++;
-    continue;
-  }
-  const r = spawnSync(NODE, [abs], { cwd: ROOT, encoding: "utf8" });
-  const out = (r.stdout || "") + (r.stderr || "");
-  // 兼容两种表述：「通过 23   失败 0」/「结果: 123 通过, 0 失败」/「通过 10 / 失败 0」
-  let pass = null, fail = null;
-  let m = /通过\s+(\d+)\s*(?:\/|,|\s)\s*失败\s+(\d+)/.exec(out);
-  if (m) { pass = +m[1]; fail = +m[2]; }
-  if (pass === null) {
-    m = /结果:\s*(\d+)\s*通过,\s*(\d+)\s*失败/.exec(out);
-    if (m) { pass = +m[1]; fail = +m[2]; }
-  }
-  if (pass === null) {
-    // 有些脚本用 ✅/❌ 计数
-    const p = (out.match(/✅/g) || []).length;
-    const f = (out.match(/❌/g) || []).length;
-    if (p || f) { pass = p; fail = f; }
-  }
-  if (pass === null) { pass = 0; fail = 1; }
-  totalPass += pass;
-  totalFail += fail;
-  rows.push({ rel, desc, status: fail === 0 ? "✅" : "❌", pass, fail });
-
-  // 失败时把该套的失败行打出来，省得再跑一次
-  if (fail > 0) {
-    const lines = out.split("\n").filter((l) => l.includes("❌") || l.includes("失败"));
-    console.log(`\n──── ${rel} 失败明细 ────`);
-    console.log(lines.slice(0, 25).join("\n"));
-  }
+/** 用**异步** spawn 跑一个套件；同步族在本环境恒 EBUSY（见文件头）。 */
+function runSuite(abs) {
+  return new Promise((resolve) => {
+    let child;
+    try {
+      child = spawn(NODE, [abs], { cwd: ROOT });
+    } catch (e) {
+      return resolve({ spawnError: e, out: "", code: null });
+    }
+    let out = "";
+    let spawnError = null;
+    child.stdout.on("data", (d) => (out += d));
+    child.stderr.on("data", (d) => (out += d));
+    // ★ spawn 失败是异步回调出来的，必须监听；否则会永远挂着
+    child.on("error", (e) => { spawnError = e; });
+    child.on("close", (code) => resolve({ code, out, spawnError }));
+  });
 }
 
-console.log("\n" + "=".repeat(64));
-for (const r of rows) {
-  console.log(
-    `${r.status}  ${String(r.pass).padStart(4)} 通过  ${String(r.fail).padStart(2)} 失败   ${r.desc}`,
-  );
+/**
+ * 从输出里抠出通过/失败计数。
+ * ★ 计数只用于**展示**，判定以退出码为准 ★
+ *   原因：spawnSync 那次事故就是"解析不到 ⇒ 兜底成失败"，
+ *   把环境问题误报成 25 套全红。格式一变就翻车的解析器不能当判据。
+ */
+function parseCounts(out) {
+  /*
+   * ★ 取**最后一次**匹配，而不是第一次 ★
+   *   套件的"最终汇总"总在输出末尾；中间可能有分节的计数
+   *   （例如契约套件会按 L1/L4/L14 分段打印）。
+   *   取第一次会拿到分段里的数字，取最后一次才是总结论。
+   */
+  const last = (re) => {
+    const g = new RegExp(re.source, "gm");
+    let m, hit = null;
+    while ((m = g.exec(out))) hit = m;
+    return hit;
+  };
+  const PATTERNS = [
+    /通过\s+(\d+)\s*(?:\/|,|\s)\s*失败\s+(\d+)/,        // 「通过 23   失败 0」
+    /结果:\s*(\d+)\s*通过,\s*(\d+)\s*失败/,              // 「结果: 123 通过, 0 失败」
+    /(\d+)\s*通过\s*[/,，、]?\s*(\d+)\s*失败/,           // 「29 通过 / 0 失败」（数词在前）
+    /通过\s*(\d+)\s*失败\s*(\d+)/,                       // 「通过 10 失败 0」
+  ];
+  for (const re of PATTERNS) {
+    const m = last(re);
+    if (m) return { pass: +m[1], fail: +m[2] };
+  }
+  // 兜底：数 emoji（有些脚本只打 ✅/❌ 不写汇总）
+  const p = (out.match(/✅/g) || []).length;
+  const f = (out.match(/❌/g) || []).length;
+  if (p || f) return { pass: p, fail: f };
+  return null;
 }
-console.log("=".repeat(64));
-console.log(`\n合计：${totalPass} 通过 / ${totalFail} 失败\n`);
-process.exit(totalFail ? 1 : 0);
+
+(async () => {
+  let totalPass = 0;
+  let totalFail = 0;
+  const rows = [];
+  const envBroken = [];
+
+  for (const [rel, desc] of SUITES) {
+    const abs = path.join(ROOT, rel);
+    if (!fs.existsSync(abs)) {
+      rows.push({ status: "❌", pass: 0, fail: 1, desc, note: "套件文件不存在" });
+      totalFail++;
+      continue;
+    }
+    const r = await runSuite(abs);
+
+    // ── ① 子进程都起不来：这是环境故障，不是测试失败 ──
+    if (r.spawnError || r.code === null) {
+      envBroken.push(rel);
+      rows.push({
+        status: "⚠️",
+        pass: 0,
+        fail: 0,
+        desc,
+        note: "子进程启动失败(" + ((r.spawnError && r.spawnError.code) || "code=null") + "）—— 未执行，不计入失败",
+      });
+      continue;
+    }
+
+    const counts = parseCounts(r.out);
+    // ── ② 判定以退出码为准；再叠加"解析到的 fail>0"（双保险）──
+    const ok = r.code === 0 && !(counts && counts.fail > 0);
+    const pass = counts ? counts.pass : 0;
+    const fail = counts ? counts.fail : ok ? 0 : 1;
+
+    totalPass += pass;
+    totalFail += ok ? 0 : Math.max(fail, 1);
+    rows.push({
+      status: ok ? "✅" : "❌",
+      pass,
+      fail: ok ? 0 : Math.max(fail, 1),
+      desc,
+      // ★ exit 0 但一个计数都没解析出来 ⇒ 很可能是"跳过了"的假绿，必须点出来
+      note: !counts && ok ? "⚠️ 未解析到计数（可能整套被跳过）" : "",
+    });
+
+    if (!ok) {
+      const lines = r.out.split("\n").filter((l) => l.includes("❌") || l.includes("失败") || l.includes("✗"));
+      console.log(`\n──── ${rel} 失败明细（exit=${r.code}） ────`);
+      console.log(lines.slice(0, 25).join("\n") || r.out.split("\n").slice(-12).join("\n"));
+    }
+  }
+
+  console.log("\n" + "=".repeat(72));
+  for (const r of rows) {
+    console.log(
+      `${r.status}  ${String(r.pass).padStart(4)} 通过  ${String(r.fail).padStart(2)} 失败   ${r.desc}` +
+        (r.note ? "   " + r.note : ""),
+    );
+  }
+  console.log("=".repeat(72));
+  console.log(`\n合计：${totalPass} 通过 / ${totalFail} 失败   （套件 ${SUITES.length} 个）\n`);
+
+  // ★ 环境故障单独收口：说清楚"没跑"，而不是让它混进"失败"里 ★
+  if (envBroken.length) {
+    console.log("⚠️  以下套件因**子进程启动失败**而未执行（环境问题，不是测试失败）：");
+    for (const b of envBroken) console.log("     " + b);
+    console.log("   ⇒ 请修环境后重跑；把「没跑」当「通过」或当「失败」都是错的。\n");
+    process.exit(1);
+  }
+  process.exit(totalFail ? 1 : 0);
+})();

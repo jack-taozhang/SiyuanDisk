@@ -43,8 +43,7 @@ function jsonResponse(body) {
   };
 }
 window.__nebuladiskPlugin = {
-  settings: { serverUrl: "http://127.0.0.1:8099", proxyPort: 6810, defaultMount: "" },
-  boot: { noNode: true },
+  settings: { serverUrl: "http://127.0.0.1:8099", defaultMount: "" },
 };
 window.fetch = async (url) => {
   const u = String(url);

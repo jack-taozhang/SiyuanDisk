@@ -29,22 +29,83 @@ const path = require("path");
 
 const HERE = __dirname;
 const PLUGIN = path.resolve(HERE, "..");
-const BUNDLE_CANDIDATES = [
-  "D:/Software/SiYuan/data/plugins/siyuan-nebuladisk/index.js", // 本地安装位
-  path.join(PLUGIN, "index.js"),
-];
+
+/**
+ * ★★★ 候选产物：**取 mtime 最新的那个**（2026-09-30 修）★★★
+ *
+ *   原来写死优先 `D:/Software/SiYuan/…`，注释还写着「本地安装位」。
+ *   但那是**旧工作区**的遗留副本 —— 思源的真实工作区写在
+ *   `~/.config/siyuan/workspace.json`，而它现在是 `E:/思源笔记`。
+ *
+ *   危害：本套件里有一批**产物级**断言（L14 的 CSS/交互、dist 重建校验等）。
+ *   工作区一搬家，这里就会静默地去测一份**过期的 bundle**：
+ *   报告绿了，绿的却是几周前的代码。而且**越是"能跑"越难发现**——
+ *   直到哪天线上行为跟测试对不上，才会怀疑到这一行。
+ *
+ *   ⇒ ① 先从 workspace.json 读出真实工作区（读不到就退回老路径）
+ *     ② 全部候选里选**最新**的那个
+ *     ③ 把选中者和它的时间**打印出来**，让"在测哪份产物"一眼可见
+ */
+const BUNDLE_CANDIDATES = (() => {
+  const out = [];
+  try {
+    const cfg = path.join(process.env.USERPROFILE || process.env.HOME || "", ".config", "siyuan", "workspace.json");
+    const ws = JSON.parse(fs.readFileSync(cfg, "utf8"));
+    for (const dir of Array.isArray(ws) ? ws : []) {
+      out.push(path.join(String(dir), "data", "plugins", "siyuan-nebuladisk", "index.js"));
+    }
+  } catch { /* 读不到就只是少一个候选 */ }
+  out.push("D:/Software/SiYuan/data/plugins/siyuan-nebuladisk/index.js"); // 历史遗留位
+  out.push(path.join(PLUGIN, "dist", "index.js"));
+  out.push(path.join(PLUGIN, "index.js"));
+  return out;
+})();
 const SY_MAIN = "C:/temp-nb/main.js"; // 思源前端 bundle 的本地提取副本（可选）
 
 let pass = 0, fail = 0, skip = 0;
 const ok = (cond, msg) => { if (cond) { pass++; console.log("  ✅ " + msg); } else { fail++; console.log("  ❌ " + msg); } };
 const note = (msg) => console.log("  ℹ️  " + msg);
 
-/* ---------- 0. 定位 bundle ---------- */
-let BUNDLE = null;
-for (const c of BUNDLE_CANDIDATES) { if (fs.existsSync(c)) { BUNDLE = c; break; } }
+/* ---------- 0. 定位 bundle（全部候选里取最新） ---------- */
+let BUNDLE = null, BUNDLE_MTIME = 0, BUNDLE_STALE_WARN = "";
+const allExisting = [];
+for (const c of BUNDLE_CANDIDATES) {
+  try {
+    const st = fs.statSync(c);
+    allExisting.push({ c, m: st.mtimeMs });
+    if (st.mtimeMs > BUNDLE_MTIME) { BUNDLE = c; BUNDLE_MTIME = st.mtimeMs; }
+  } catch { /* 不存在，跳过 */ }
+}
 if (!BUNDLE) { console.log("找不到构建产物 index.js，请先运行 tools/build.js"); process.exit(1); }
 const src = fs.readFileSync(BUNDLE, "utf8");
 console.log("测试目标 bundle: " + BUNDLE + "  (" + Buffer.byteLength(src) + " bytes)");
+console.log("            mtime: " + new Date(BUNDLE_MTIME).toISOString());
+
+/*
+ * ★ 产物新鲜度闸门 ★
+ *   产物若比 src/ 里最新的源文件还旧，说明**没重建**，
+ *   那这一批产物级断言就是在测旧代码 ⇒ 必须显式报警（不静默通过）。
+ *   （这是 diskcanvas 那边踩过的同类坑：闸门"绿"但产物是旧的。）
+ */
+try {
+  const srcDir = path.join(PLUGIN, "src");
+  let newest = 0, newestName = "";
+  for (const f of fs.readdirSync(srcDir)) {
+    const st = fs.statSync(path.join(srcDir, f));
+    if (st.mtimeMs > newest) { newest = st.mtimeMs; newestName = f; }
+  }
+  if (newest > BUNDLE_MTIME) {
+    BUNDLE_STALE_WARN =
+      `产物比源码旧：src/${newestName} 是 ${new Date(newest).toISOString()}，` +
+      `而 bundle 是 ${new Date(BUNDLE_MTIME).toISOString()} ⇒ 请先重建（node tools/build.js --repo）`;
+  }
+} catch { /* 读不到 src/ 就算了 */ }
+// ★ 产物过期必须是**红的**，不能只打个警告 ★
+//   只警告的话，"没重建"仍然会以 0 退出 ⇒ 又是一次假绿。
+//   本套件确实含产物级断言（L14 系列读 index.css / bundle 行为），
+//   所以拿旧产物跑出来的绿色是没有意义的。
+ok(!BUNDLE_STALE_WARN, "S0：bundle 不早于 src/ 最新源文件（否则测的是旧产物）"
+  + (BUNDLE_STALE_WARN ? " —— " + BUNDLE_STALE_WARN : ""));
 
 /**
  * 剥掉注释后的源码 —— 有些断言要判「真代码里没有 X」，
@@ -85,7 +146,27 @@ let parseHTML = null;
 for (const p of ["C:/temp-nb/nbmods/node_modules/linkedom", path.join(HERE, "node_modules", "linkedom")]) {
   try { parseHTML = require(p).parseHTML; note("DOM 实现: " + p); break; } catch (e) {}
 }
-if (!parseHTML) { console.log("  ⚠️  未安装 linkedom，跳过（装法：npm i linkedom --prefix C:/temp-nb/nbmods）"); process.exit(0); }
+/*
+ * ★★★ 这里**不能** exit(0) ★★★
+ *
+ *   原来写的是 `process.exit(0)` —— 于是「linkedom 没装」这个**环境缺失**
+ *   会以退出码 0 结束，跑套件的汇总器把它计成**通过**。
+ *   一句话：**整套 L1–L10 契约断言根本没跑，报告却是绿的。**
+ *
+ *   这属于最坏的一类假绿：它不会让你"修错东西"，而是让你
+ *   **以为这里有护栏**。真出事时才发现这条护栏从一开始就不存在。
+ *
+ *   ⇒ 环境缺失必须是**显式的失败**（exit 1）并把原因打到 stdout，
+ *     让汇总器把它标红、让维护者去装依赖，而不是静默跳过。
+ *   （对照纪律：skip ≠ pass。）
+ */
+if (!parseHTML) {
+  console.log("");
+  console.log("  ❌ 未安装 linkedom —— 本套件的 L1–L10 契约断言**全部未执行**。");
+  console.log("     安装：npm i linkedom --prefix C:/temp-nb/nbmods");
+  console.log("     ★ 注意：这里**故意**用非 0 退出码，避免「没跑 = 通过」的假绿。");
+  process.exit(1);
+}
 
 const { window: W } = parseHTML("<!DOCTYPE html><html><body></body></html>");
 const doc = W.document;
@@ -190,8 +271,8 @@ const siyuanSDK = {
   ok(typeof B === "function", "查到 customBlockRenders[blockType].render");
   if (typeof B !== "function") { console.log("\n结果: " + pass + " 通过, " + fail + " 失败"); process.exit(1); }
 
-  // 通道就绪 + api 桩
-  plugin.boot = { status: { ok: true, detail: "ok" } };
+  // 通道就绪（判据 = 配了网盘地址；代理已删除）+ api 桩
+  plugin.channelReady = () => true;
   plugin.api = {
     list: async () => ({ entries: [
       { name: "01-需求文档", isDir: true, size: 0, modified: "2026-08-01 10:00" },
@@ -904,9 +985,19 @@ const siyuanSDK = {
   ok(!/^\s*(?:async\s+)?insertLinkToDoc\s*\(/m.test(treeSrc),
      "K5b：insertLinkToDoc() 已随菜单项一并删除（无残留实现）");
 
-  // ---- K6：「复制直链」必须走签名接口 + 可达地址改写，不能自己拼 ----
-  ok(/API\.signedRawUrl\s*\(/.test(treeSrc),
-     "K6a：复制直链走 API.signedRawUrl()（不是自己拼 /api/raw，否则 403）");
+  // ---- K6：「复制直链」必须走后端签发的地址，不能自己拼 ----
+  //
+  //  ★ 2026-09-30 改锚点 ★
+  //    从 `signedRawUrl` 换成 `directLinkUrl` —— 后者是「复制直链」的**唯一出口**
+  //    （永久短链优先 / 短链不可用时回退 signedRawUrl）。判据的**意图不变**：
+  //    「地址必须由后端构造」，只是出口换了个名字。
+  //    ★ 注意别只改锚点就完事：K6 的意图是"两个入口共用一条出口"，
+  //      若只判 directLinkUrl 存在，有人把它绕过去直接调 signedRawUrl 也照样绿。
+  //      ⇒ 补一条「tree 侧不再直接调 signedRawUrl」的反向断言。
+  ok(/API\.directLinkUrl(?![\w$])\s*\(/.test(treeSrc),
+     "K6a：复制直链走 API.directLinkUrl()（两处共用一条出口，不自己拼 URL）");
+  ok(!/API\.signedRawUrl(?![\w$])\s*\(/.test(treeSrc),
+     "K6a2：★ tree.js 不再**直接**调 signedRawUrl（绕过 directLinkUrl 就会让两处地址再次分叉）");
   ok(/async\s+copyRawLink\s*\(/.test(treeSrc),
      "K6b：存在 copyRawLink 实现");
   ok(/entry\.isDir[\s\S]{0,400}?文件夹没有直链/.test(treeSrc) ||
@@ -1152,10 +1243,34 @@ const siyuanSDK = {
   //  明确是**免登录**通道（只校验 exp + HMAC 签名，不依赖会话）。
   //  已实测：伪造签名返回 403（而不是 401/302），证明它跟会话无关。
   ok(/async\s+openInBrowser\s*\(/.test(viewerSrc),
-     "L1a：viewer.js 的 openInBrowser 是 async（要 await 取签名直链）");
-  ok(/API\.signedRawUrl\s*\(/.test(
-       viewerSrc.slice(viewerSrc.indexOf("openInBrowser"))),
-     "L1b：openInBrowser 走 API.signedRawUrl()（免登录通道，才不会再要密码）");
+     "L1a：viewer.js 的 openInBrowser 是 async（要 await 取直链）");
+  /*
+   * ★★ 2026-09-30 修：这条断言**早就过期了，只是一直没被执行** ★★
+   *
+   *   它原来写的是「openInBrowser 里必须出现 API.signedRawUrl(」——
+   *   那是 #62 之前的状态（当初 openInBrowser 自己选地址）。
+   *   #62 把两个调用点统一收敛到 `API.browserViewUrl()` 之后，
+   *   openInBrowser 里**不可能**再出现 signedRawUrl ⇒ 这条恒红。
+   *
+   *   之所以一直没人发现，是因为本套件在缺 linkedom 时会 `process.exit(0)`
+   *   假装通过（那个假绿已在文件开头修掉）。**修好假绿之后它立刻暴露了。**
+   *   —— 这正好印证：假绿的问题不是"少测了几条"，而是"过期断言不会被发现"。
+   *
+   *   判据改写为**判意图**而不是判实现细节：openInBrowser 必须走向
+   *   一条**免登录**通道（否则新页签里没会话 Cookie ⇒ 弹登录页，
+   *   就是用户当年说的"还需要输入密码"）。
+   */
+  const viewerOpenSeg = viewerSrc.slice(viewerSrc.indexOf("openInBrowser"));
+  ok(/API\.browserViewUrl(?![\w$])\s*\(/.test(viewerOpenSeg),
+     "L1b：openInBrowser 走 API.browserViewUrl()（#62 起唯一的地址出口）");
+  //  ★ 链路闭合校验：browserViewUrl 内部必须真的用免登录通道 ★
+  //    短链 `/f/<token>`（token 即凭证）与签名直链 `/api/raw?exp&sig`
+  //    都不看会话 Cookie ⇒ 新页签打开不会被要求登录。
+  const bvwSeg = apiSrc.slice(apiSrc.indexOf("export async function browserViewUrl"));
+  ok(/API\.shortLinkUrl(?![\w$])\s*\(/.test(bvwSeg),
+     "L1b2：browserViewUrl 首选短链 /f/<token>（免登录、长期有效、地址短）");
+  ok(/API\.signedRawUrl(?![\w$])\s*\(/.test(bvwSeg),
+     "L1b3：browserViewUrl 保留签名直链回退（短链不可用时不至于打不开）");
   ok(!/openInBrowser\s*\(\)\s*\{[\s\S]{0,200}?window\.open\(\s*url\s*,\s*"_blank"\s*\)/.test(viewerSrc),
      "L1c：openInBrowser 不再只是 window.open(serverUrl)（那是首页，会弹登录）");
 
@@ -1223,36 +1338,100 @@ const siyuanSDK = {
   const signedRawBody = idxSignedRaw >= 0 ? apiSrc.slice(idxSignedRaw) : "";
   const previewUrlBody = idxPreviewUrl >= 0 ? apiSrc.slice(idxPreviewUrl, idxSignedRaw > idxPreviewUrl ? idxSignedRaw : undefined) : "";
   const viewerCopyLink = viewerSrc.slice(viewerSrc.indexOf("async copyLink"));
+  // ★ 2026-09-30 新增：右键那一侧的定位锚点（下面 L4e4 要用）★
+  //   同样要加 `idx >= 0` 检查 —— 找不到时 slice(-1) 只剩一个字符，
+  //   正则恒不匹配 ⇒ 断言会**假通过**（这是本文件已经踩过一次的坑）。
+  const idxTreeCopy = treeSrc.indexOf("async copyRawLink");
+  const treeCopyRaw = idxTreeCopy >= 0 ? treeSrc.slice(idxTreeCopy) : "";
 
   ok(/apiGet\(\s*"\/api\/preview"/.test(signedRawBody),
      "L4a：signedRawUrl 内部就是 GET /api/preview（与 previewUrl 同一接口）");
   //  ★ 反向断言：previewUrl 也必须打同一个接口，才叫"同一条管线"
   ok(/apiGet\(\s*"\/api\/preview"/.test(previewUrlBody),
      "L4a2：previewUrl 打的也是同一个 GET /api/preview（两处不会各自漂移）");
+  ok(idxTreeCopy >= 0, "L4-0c：能在 tree.js 里定位到 async copyRawLink()");
   ok(/browserReachableUrl\s*\(/.test(viewerCopyLink) ||
-     /signedRawUrl\s*\(/.test(viewerCopyLink),
-     "L4b：预览栏 copyLink 走 signedRawUrl（内含 browserReachableUrl，换掉 nebula:8088 主机名）");
+     /directLinkUrl\s*\(/.test(viewerCopyLink),
+     "L4b：预览栏 copyLink 走 directLinkUrl（内含 browserReachableUrl，换掉 nebula:8088 主机名）");
   ok(/browserReachableUrl\s*\(/.test(signedRawBody),
      "L4c：signedRawUrl 过 browserReachableUrl");
   ok(/文件夹没有直链/.test(treeSrc),
      "L4d：目录不出直链是**有意的**差异（网盘 /api/preview 对目录回 400）");
 
-  // ---- L4e：任务⑱ 下载语义（本次改动，最重要的一组）----
+  // ---- L4e：任务⑱ 打开/下载语义（用户裁定，别"顺手统一"）----
   //
-  //  ★ 这四条是"预览栏=下载、右键=打开"这个裁定的可执行契约 ★
-  ok(/async\s+signedRawUrl\s*\(\s*mount\s*,\s*path\s*,\s*download\s*=\s*false\s*\)/.test(apiSrc),
-     "L4e1：signedRawUrl 有第 3 个参数 download（默认 false ⇒ 不破坏既有调用方）");
-  ok(/download:\s*download\s*\?\s*"1"\s*:\s*undefined/.test(apiSrc) ||
-     /download\s*\?\s*"1"\s*:\s*undefined/.test(apiSrc),
-     "L4e2：signedRawUrl 把 download 转成 query 里的 download=1（不能前端拼 &dl=1，sig 会不匹配）");
-  ok(/signedRawUrl\s*\(\s*this\.mount\s*,\s*this\.path\s*,\s*true\s*\)/.test(viewerCopyLink),
-     "★ L4e3：预览栏 copyLink 传 true ⇒ **下载**型直链（用户裁定）");
-  ok(!/signedRawUrl\s*\([^)]*,\s*true\s*\)/.test(treeSrc),
-     "★ L4e4：右键 copyRawLink **不传** true ⇒ 仍是**打开**型直链（用户要求保持不变）");
+  //  ★ 2026-09-30 只统一了**基地址**（两处都走 /f/<token>），语义差异原样保留 ★
+  //     改前：同一文件出来两条 330 字符、sig 各不相同的长地址（看着就是 bug）
+  //     改后：同一条 41 字符短链，「下载」只表现为后缀 ?dl=1
+  ok(/async\s+directLinkUrl\s*\(\s*mount\s*,\s*path\s*,\s*opts\s*=\s*\{\}\s*\)/.test(apiSrc),
+     "L4e1：directLinkUrl() 是「复制直链」的**唯一出口**（两处共用，否则地址又会分叉）");
+  ok(/await\s+API\.directLinkUrl(?![\w$])\s*\(/.test(viewerCopyLink) &&
+     /download:\s*true/.test(viewerCopyLink),
+     "★ L4e3：预览栏 copyLink 传 download:true ⇒ **下载**型（用户裁定）");
+  ok(/await\s+API\.directLinkUrl(?![\w$])\s*\(/.test(treeCopyRaw) &&
+     !/download:\s*true/.test(treeCopyRaw),
+     "★ L4e4：右键 copyRawLink **不传** download:true ⇒ 仍是**打开**型（用户要求保持不变）");
+  //  回退链必须还在：短链后端没上线时不能把「复制直链」整个打没
+  ok(/await\s+API\.signedRawUrl(?![\w$])\s*\(/.test(apiSrc.slice(apiSrc.indexOf("async directLinkUrl"))),
+     "L4e5：directLinkUrl 失败会回退 signedRawUrl（后端没升级时功能不能消失）");
+  ok(/withDl\s*\(/.test(apiSrc.slice(apiSrc.indexOf("async directLinkUrl"))),
+     "L4e6：短链的 ?dl=1 由 withDl() 统一补（不在调用方各自拼）");
 
-  // ---- L4f：不能自己拼 dl=1（后端已把 dl 并入签名）----
-  ok(!/dl=1/.test(apiSrc.replace(/\/\*[\s\S]*?\*\//g, "").replace(/^\s*\/\/.*$/gm, "")),
-     "L4f：api.js 代码里没有手拼 dl=1（签名覆盖 dl ⇒ 手拼必 403）");
+  // ---- L4f：dl 的拼接位置 —— 两条通道规则**恰好相反**，别记混 ----
+  //
+  //  · `/api/raw` 的 dl **并入 HMAC 签名** ⇒ 前端**绝对不能**拼（必 403）
+  //  · `/f/<token>` 的 dl 只是请求时参数 ⇒ 前端**可以**拼，且必须由 withDl() 独占
+  //
+  //  定位方式：先剥掉注释再切段。signedRawUrl 在 shortLinkUrl **之前**，
+  //  所以两段之间的窗口正好是 signedRawUrl 的函数体 + 少量间隔。
+  const apiCodeOnly = apiSrc.replace(/\/\*[\s\S]*?\*\//g, "").replace(/^\s*\/\/.*$/gm, "");
+  const iSigned = apiCodeOnly.indexOf("async signedRawUrl");
+  const iShort = apiCodeOnly.indexOf("async shortLinkUrl");
+  ok(iSigned >= 0 && iShort > iSigned,
+     "L4f0：能在 api.js 的**代码区**（已剥注释）里按顺序定位 signedRawUrl → shortLinkUrl");
+  const signedBodyOnly = iSigned >= 0 && iShort > iSigned ? apiCodeOnly.slice(iSigned, iShort) : "";
+  ok(!/dl=1/.test(signedBodyOnly),
+     "L4f1：signedRawUrl 里没有手拼 dl=1（签名覆盖 dl ⇒ 手拼必 403）");
+  ok(/export\s+function\s+withDl\s*\(/.test(apiCodeOnly),
+     "L4f2：短链的 dl 拼接收敛到 withDl()（唯一一处，别散落）");
+
+  /*
+   * ★ L4f3：withDl 的**行为**断言（不是"源码里有没有那个字符串"）★
+   *
+   *   一开始这里写的是 `/\[[?&]dl=\]/`（想匹配源码里的 `/[?&]dl=/`），
+   *   结果**恒假** —— 我匹配的是「`[?&]dl=` 后面跟一个 `]`」，
+   *   而源码里那一位是 `/`（正则的结束斜杠）。这种"锚点写错"的断言
+   *   是最难发现的一类：它永远红，或永远绿，**与实现无关**。
+   *
+   *   ⇒ 改成把函数**抽出来真跑一遍**。它是纯函数、零依赖，最适合这么测。
+   *     断言的是幂等/空串/两种入参，而不是某段文本长什么样。
+   */
+  const withDlSrc = (apiCodeOnly.match(/export\s+function\s+withDl\s*\([\s\S]*?\n\}/) || [""])[0]
+    .replace(/^export\s+/, "");
+  let withDl = null;
+  try {
+    withDl = (0, eval)("(" + withDlSrc + ")"); // 间接 eval ⇒ 落在全局作用域
+  } catch (e) {
+    withDl = null;
+  }
+  ok(typeof withDl === "function",
+     "L4f3a：能把 withDl 抽出来求值（抽不出来 ⇒ 下面的行为断言无从谈起）");
+  if (typeof withDl === "function") {
+    const base = "http://192.168.193.70:8089/f/N-MAJI5zBjO2";
+    ok(withDl(base, false) === base && withDl(base) === base,
+       "L4f3b：withDl(u, false) 原样返回（打开型不加后缀）");
+    ok(withDl(base, true) === base + "?dl=1",
+       "L4f3c：withDl(u, true) 补上 ?dl=1");
+    ok(withDl(base + "?dl=1", true) === base + "?dl=1",
+       "L4f3d：★ 幂等 —— 已带 dl= 时不重复拼（否则拼出 ?dl=1&dl=1）");
+    ok(withDl(base + "?v=2", true) === base + "?v=2&dl=1",
+       "L4f3e：已有其它查询串时用 & 连接（不能拼出第二个 ?）");
+    ok(withDl("", true) === "" && withDl(null, true) === "",
+       "L4f3f：空值原样返回（不产出 \"?dl=1\" 这种幽灵地址）");
+  } else {
+    skip += 5;
+    note("withDl 未能求值，跳过 L4f3b–f 五条行为断言（跳过 ≠ 通过）");
+  }
 
   // ---- L4g：后端 rawlink/webutil/preview 三处的下载语义（跨仓库校验，可选）----
   //

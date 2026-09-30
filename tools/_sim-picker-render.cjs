@@ -14,8 +14,8 @@
  *   1. bundle 是 CommonJS，裸 `fetch` / `sessionStorage` 必须在 globalThis 上
  *      真实存在，否则报 "Cannot read properties of undefined (reading 'get')"。
  *   2. 响应对象必须带 headers.get("content-type")，否则 parse() 直接炸。
- *   3. HAS_NODE 在真 Node 下为 true ⇒ 插件会去起本地代理。测试里靠
- *      window.__nebuladiskPlugin.boot.noNode = true 强制走直连（见 hasNode()）。
+ *   3. 内置代理已删除（2026-09-30）⇒ 只剩直连，不需要再靠
+ *      window.__nebuladiskPlugin.boot.noNode 之类的东西锁通道。
  *   4. global.fetch 必须在 stub 定义**之后**赋值，否则捕获的是 jsdom 的原生
  *      fetch（会真的发网络请求）。
  *   5. Picker 未导出。测试用「临时副本」在 module.exports 后挂一个 Picker ——
@@ -33,13 +33,34 @@ const ROOT = path.resolve(__dirname, "..");
 const DIST = process.argv[2] || path.join(ROOT, "dist", "index.js");
 const CSS = process.argv[3] || path.join(ROOT, "dist", "index.css");
 
-let JSDOM;
-try {
-  JSDOM = require("jsdom").JSDOM;
-} catch {
-  console.log("⚠️  未安装 jsdom，跳过渲染冒烟测试（npm i -D jsdom）");
-  console.log("通过 0 失败 0");
-  process.exit(0);
+let JSDOM = null;
+/*
+ * ★★★ 依赖解析 & 缺失时的退出码（2026-09-30 修）★★★
+ *
+ *  两个坑，都在同一个 try 里：
+ *
+ *   ① **只 `require("jsdom")` 找不到** —— 本沙箱把依赖装在
+ *      `C:/temp-nb/nbmods`（不在 Node 的向上查找链上），
+ *      所以即使装了也 require 不到。⇒ 显式列出候选路径（与
+ *      `_sim-embed-contract.cjs` 找 linkedom 的做法一致）。
+ *
+ *   ② **缺依赖时 `process.exit(0)` 是假绿** —— 原来打印
+ *      「跳过渲染冒烟测试」+「通过 0 失败 0」然后退出 0。
+ *      汇总器把它计成**通过**，于是这套「真实 bundle 的渲染冒烟」
+ *      从头到尾**一次都没跑过**，而报告是绿的。
+ *      最坏的地方不是"少测"，是**你以为这里有护栏**。
+ *
+ *  ⇒ 缺依赖一律 exit(1)，并把「未执行」说清楚，让汇总器红出来。
+ */
+for (const p of ["jsdom", "C:/temp-nb/nbmods/node_modules/jsdom", path.join(__dirname, "node_modules", "jsdom")]) {
+  try { JSDOM = require(p).JSDOM; break; } catch { /* 下一个候选 */ }
+}
+if (!JSDOM) {
+  console.log("✗ 未安装 jsdom —— 本套件的渲染冒烟测试**全部未执行**。");
+  console.log("  安装：npm i jsdom --prefix C:/temp-nb/nbmods");
+  console.log("  ★ 故意用非 0 退出码：没跑 ≠ 通过。");
+  console.log("通过 0 失败 1");
+  process.exit(1);
 }
 
 if (!fs.existsSync(DIST) || !fs.existsSync(CSS)) {
@@ -97,10 +118,9 @@ function jsonResponse(body) {
   };
 }
 
-// 把通道锁到 direct（真 Node 下 HAS_NODE 为 true，否则插件会去起代理）
+// 通道就是直连（内置代理已删除，api.js 只读 settings.serverUrl）
 window.__nebuladiskPlugin = {
-  settings: { serverUrl: "http://127.0.0.1:8099", proxyPort: 6810, defaultMount: "" },
-  boot: { noNode: true },
+  settings: { serverUrl: "http://127.0.0.1:8099", defaultMount: "" },
 };
 
 window.fetch = async (url) => {

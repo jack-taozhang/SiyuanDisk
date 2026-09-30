@@ -13,11 +13,21 @@
   python nbssh.py "远端命令"               # 执行并打印 stdout
   python nbssh.py --getlocal "远端路径"     # 拉文件到 stdout（二进制安全？否，用 base64）
   python nbssh.py --put <本地> <远端>       # 上传（base64 分块）
+  python nbssh.py --sudo "远端命令"         # 以 root 执行（密码经 stdin 喂给 sudo -S）
+
+★ 为什么要有 --sudo（2026-09-30 加）★
+  本机没有 tty，`sudo docker ...` 直接报
+      "sudo: a terminal is required to read the password"
+  而 NAS 上 tao_zhang 不在 docker 组 ⇒ 免 sudo 访问 docker.sock 被拒。
+  所以必须 `echo <pass> | sudo -S -p '' <cmd>`：-S 让 sudo 从 stdin 读密码，
+  -p '' 去掉提示串（否则提示串会混进 stderr 被误当成错误）。
+  注意远端命令整体要再包一层 sh -c，否则 sudo 只对第一个词生效。
 """
 import sys
 import os
 import json
 import base64
+import shlex
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, "C:/temp-paramiko")
@@ -128,10 +138,33 @@ def put(local, remote, mode=None):
         c.close()
 
 
+def sudo_run(cmd, timeout=600):
+    """以 root 执行远端命令。
+
+    ★ 为什么是 `echo PASS | sudo -S -p '' sh -c '<cmd>'` ★
+      · `-S`     让 sudo 从 stdin 读口令（无 tty 时唯一可行的办法）
+      · `-p ''`  清掉提示串，否则 "[sudo] password for x:" 会混进 stderr
+      · `sh -c`  把整条命令交给一个 shell，避免 sudo 只把第一个词提权、
+                 后面的重定向/管道仍在普通用户下执行
+      ★ 口令用 shlex.quote 包住 ★ —— NAS 口令含 `@` 等字符，
+        不加引号会被 shell 当成重定向/特殊字符。
+    """
+    inner = "echo %s | sudo -S -p '' sh -c %s" % (
+        shlex.quote(PASS), shlex.quote(cmd),
+    )
+    return run(inner, timeout=timeout)
+
+
 def main():
     args = sys.argv[1:]
     if not args:
-        raise SystemExit("用法: python nbssh.py \"远端命令\"\n      python nbssh.py --put <本地> <远端> [mode]")
+        raise SystemExit("用法: python nbssh.py \"远端命令\"\n      python nbssh.py --put <本地> <远端> [mode]\n      python nbssh.py --sudo \"远端命令\"")
+    if args[0] == "--sudo":
+        out, err, code = sudo_run(" ".join(args[1:]))
+        sys.stdout.write(out)
+        if err.strip():
+            sys.stderr.write(err)
+        sys.exit(code)
     if args[0] == "--put":
         local, remote = args[1], args[2]
         mode = args[3] if len(args) > 3 else None

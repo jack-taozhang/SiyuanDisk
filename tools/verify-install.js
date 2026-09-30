@@ -136,23 +136,36 @@ function checkLoadedFromLog(dataDir) {
   };
 }
 
-/** 探活：插件的 onload() 会起本地转发代理。连不上 ⇒ onload 从未执行 */
-function probeProxy(port) {
-  return new Promise((resolve) => {
-    let done = false;
-    const finish = (v) => { if (!done) { done = true; resolve(v); } };
-    try {
-      const req = require("http").request(
-        { host: "127.0.0.1", port, path: "/__ping", method: "GET", timeout: 1500 },
-        (res) => { res.resume(); finish({ up: true, status: res.statusCode }); }
-      );
-      req.on("error", (e) => finish({ up: false, code: e.code }));
-      req.on("timeout", () => { req.destroy(); finish({ up: false, code: "TIMEOUT" }); });
-      req.end();
-    } catch (e) {
-      finish({ up: false, code: e.message });
+/**
+ * 探活：判断插件 onload() 有没有真的跑过。
+ *
+ * ★ 判据换过一次（2026-09-30）★
+ *   以前是「能不能连上本地转发代理 :6810 /__ping」——
+ *   代理的启动就发生在 onload 里，连得上就说明 onload 执行过。
+ *   内置代理已整体删除，**没有本地进程可探了**。
+ *
+ *   现在的判据更直接：插件 onload 的**第一句**就是往
+ *   `<工作区>/temp/nebuladisk.log` 写一行 `=== onload 开始 ... ===`。
+ *   日志里有本次进程的记录 ⇒ onload 执行过；没有 ⇒ 没执行。
+ *   （这比看 petals.json 更准 —— 内核会推 reload，那是假阳性。）
+ */
+function probePluginDiag(dataDir) {
+  try {
+    const lf = path.join(dataDir, "..", "temp", "nebuladisk.log");
+    if (!fs.existsSync(lf)) {
+      return { up: false, code: "诊断日志不存在（onload 从未写日志）" };
     }
-  });
+    const tail = fs.readFileSync(lf, "utf8").slice(-4000);
+    // onload 首句形如：=== onload 开始 frontend=desktop ===
+    const m = tail.match(/=== onload 开始[^\n]*/);
+    if (!m) {
+      return { up: false, code: "日志里没有 onload 记录（插件未加载）" };
+    }
+    const mt = fs.statSync(lf).mtime;
+    return { up: true, status: m[0].trim(), mtime: mt };
+  } catch (e) {
+    return { up: false, code: e.message };
+  }
 }
 
 /** 把 "2026/09/22 12:58:02" 解析成本地时间戳；失败返回 null */
@@ -299,13 +312,13 @@ function fmt(ms) {
   }
 
   const logr = checkLoadedFromLog(conf.dataDir);
-  const proxyPort = 6810;
-  const proxy = await probeProxy(proxyPort);
+  const probe = probePluginDiag(conf.dataDir);
   info(
-    proxy.up
-      ? `转发代理在线: 127.0.0.1:${proxyPort} → HTTP ${proxy.status}  ⇒ onload() 已执行`
-      : `转发代理未响应 (${proxy.code}) ⇒ onload() **没有**执行`
+    probe.up
+      ? `插件诊断日志有 onload 记录：${probe.status}  ⇒ onload() 已执行`
+      : `插件诊断日志无 onload 记录 (${probe.code}) ⇒ onload() **没有**执行`
   );
+  const proxy = probe;   // 下方沿用同一个「上次启动有没有真的跑到 onload」判断
 
   if (logr.ok) {
     info(`最近一次「loaded petals」于 ${logr.time}，共 ${logr.plugins.length} 个插件`);

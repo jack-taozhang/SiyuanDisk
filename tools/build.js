@@ -65,8 +65,9 @@ const ENTRY = "index.js";
 
 /** 需要打进 bundle 的模块（相对 SRC_ROOT），顺序由依赖分析决定 */
 const MODULES = [
-  "src/proxy.js",
+  "src/diag.js",
   "src/api.js",
+  "src/media.js",
   "src/external.js",
   "src/icons.js",
   "src/tree.js",
@@ -221,9 +222,11 @@ function stripExports(code) {
 /* -------------------------------------------------------------------------
  * ★ CommonJS 兼容层
  *
- *   src/proxy.js 是**用 CommonJS 写的**（结尾 module.exports = {...}），
+ *   曾经 src/proxy.js 是**用 CommonJS 写的**（结尾 module.exports = {...}），
  *   而其余文件是 ESM。若直接用命名空间 IIFE 包起来，
  *   proxy.js 里的 `module` 就是个未定义变量 → 加载即抛错。
+ *   （2026-09-30 起内置代理已整体删除，本兼容层目前没有使用者，
+ *     但保留着 —— 新增 CJS 风格模块时不必再踩一遍这个坑。）
  *
  *   解决办法：给每个模块在自己的作用域里提供 module/exports 两个局部变量，
  *   模块内的 module.exports 赋值照常工作，之后我们再把它作为该模块的导出。

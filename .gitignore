@@ -1,6 +1,11 @@
 # ---- 本地敏感配置（绝不入库）----
 # 部署口令。仓库里只保留 .nb-local.json.example
 tools/.nb-local.json
+# GitHub 推送令牌（一行纯 token）。与 siyuan-diskcanvas 保持同一约定：
+#   credential.helper 从仓库根读它，避免走 GCM（在非桌面 shell 会挂死）。
+.gh-token
+# 配套的凭据助手脚本（单文件 Python，只读上面的 .gh-token；机器本地件，不入库）
+.gh-cred.py
 .env
 .env.local
 *.secret
@@ -56,3 +61,15 @@ dist-package/
 #   ★ 有长期价值的探针请放 tools/_probe-*.cjs（那些是入库的）；
 #     这里只放「用完即弃」的东西，别把根因结论留在这儿。
 .scratch/
+
+# ---- 验证脚手架与工作区记忆（不入库，2026-09-30 补）----
+#   .verify/    headless Chrome profile + 一次性验收探针（verify-*.cjs / probe-*.cjs）。
+#               ★ 这些探针为了连本机网盘，会**写死真实口令**
+#                 （如 `.verify/probe-raw.mjs` 里的 `const PASS = "…"`）；
+#                 目录一旦漏忽略，`git add -A` 就会把口令带进公开仓库。
+#               ★ 与 .scratch/ 是同类东西 —— .scratch/ 早已忽略，.verify/ 被漏掉了。
+#                 两者都建议换成真正的环境变量或 tools/_local.cjs。
+#   .workbuddy/ 工作区记忆（MEMORY.md / YYYY-MM-DD.md）—— 本地笔记，
+#               含部署细节与口令线索，同样绝不入库。
+.verify/
+.workbuddy/

@@ -58,12 +58,121 @@ const ALLOW = [
   { file: "tools/check-secrets.cjs", why: "本检查脚本自身，规则里必然出现这些路径形态" },
 ];
 
+/*
+ * ★ 环境降级：git 起不来时的文件列表来源（2026-09-30 加）★
+ *
+ *   症状（本机实测）：Windows / Git Bash 下 `spawnSync git` 抛
+ *     `Error: spawnSync git EBUSY  { errno: -4082, code: 'EBUSY' }`
+ *   于是 execFileSync 直接崩栈 ⇒ 退出码 1。
+ *
+ *   ★ 为什么这很危险 ★
+ *     崩栈的退出码（1）与"真的扫出口令"的退出码**完全一样**。
+ *     汇总器分不清"查出问题"和"压根没跑起来"——
+ *     一个**环境故障**会被读成**安全检查失败**，
+ *     久而久之大家就学会"这条红了是正常的"，闸门彻底失效。
+ *
+ *   ⇒ 退化成文件系统遍历。★ 但**必须**同时按 .gitignore 过滤 ★
+ *     本闸门的语义是「**已跟踪**文件里有没有明文口令」。
+ *     第一版降级忘了这一层，于是把 `tools/_nas-src/`（从容器拉回来的
+ *     第三方源码，注释里写明"compose 里含真实 secret"，已在 .gitignore
+ *     里排除）也扫了进来 ⇒ **报出 2 处"真口令泄漏"的假 Positive**。
+ *     假 Positive 比漏报更伤闸门：它会训练人「看到红就跳过」。
+ *     （实测确认：那两处 `NEBULA_ADMIN_PASSWORD: "Redmaple@123"` 确实
+ *      是明文口令，但该目录**不入库**，所以对仓库不构成泄漏。）
+ *
+ *   ⇒ 这里实现一个 .gitignore 的**够用手集**（见 matchIgnore），
+ *     覆盖本仓库用到的全部写法；遇到不支持的写法（如 `!` 取反）
+ *     会**显式提示**，而不是默默放过。
+ */
+const WALK_SKIP = new Set([".git"]); // .git 永远跳过；其余交给 .gitignore
+
+/** 把一条 gitignore 模式转成正则（仅路径段内的 glob） */
+function globToRe(pat) {
+  const esc = pat.replace(/[.+^${}()|[\]\\]/g, "\\$&");
+  const body = esc
+    .replace(/\*\*/g, "\u0000")      // 先占位，避免被下面的 * 规则吃掉
+    .replace(/\*/g, "[^/]*")
+    .replace(/\?/g, "[^/]")
+    .replace(/\u0000/g, ".*");
+  return new RegExp("^" + body + "$");
+}
+
+let IGNORE_RULES = null;
+function loadIgnore() {
+  if (IGNORE_RULES) return IGNORE_RULES;
+  const rules = [];
+  let raw = "";
+  try { raw = fs.readFileSync(path.join(ROOT, ".gitignore"), "utf8"); } catch { /* 没有就算了 */ }
+  for (let ln of raw.split("\n")) {
+    ln = ln.trim();
+    if (!ln || ln.startsWith("#")) continue;
+    if (ln.startsWith("!")) { console.log("   ℹ️  .gitignore 含取反规则（本降级实现不支持）：" + ln); continue; }
+    const dirOnly = ln.endsWith("/");
+    const pat = ln.replace(/\/+$/, "");
+    rules.push({ pat, dirOnly, hasSlash: pat.includes("/"), re: globToRe(pat) });
+  }
+  IGNORE_RULES = rules;
+  return rules;
+}
+
+/** rel 是相对仓库根的 posix 路径；返回它是否被 .gitignore 排除 */
+function matchIgnore(rel) {
+  const segs = rel.split("/");
+  for (const r of loadIgnore()) {
+    if (r.hasSlash) {
+      // 路径规则：逐级前缀比对（目录规则靠这个命中它下面的所有文件）
+      let acc = "";
+      for (let i = 0; i < segs.length; i++) {
+        acc = acc ? acc + "/" + segs[i] : segs[i];
+        if (r.re.test(acc)) return true;
+      }
+      if (!r.dirOnly && r.re.test(rel)) return true;
+    } else {
+      // 段规则：任一路径段命中即可（目录规则只看非末段，即"必须是个目录"）
+      for (let i = 0; i < segs.length; i++) {
+        if (r.dirOnly && i === segs.length - 1) continue;
+        if (r.re.test(segs[i])) return true;
+      }
+    }
+  }
+  return false;
+}
+
+function walkFiles(dir, out = []) {
+  let entries;
+  try { entries = fs.readdirSync(dir, { withFileTypes: true }); } catch { return out; }
+  for (const e of entries) {
+    if (WALK_SKIP.has(e.name)) continue;
+    const abs = path.join(dir, e.name);
+    const rel = path.relative(ROOT, abs).replace(/\\/g, "/");
+    if (matchIgnore(rel + (e.isDirectory() ? "/" : "")) || matchIgnore(rel)) continue;
+    if (e.isDirectory()) walkFiles(abs, out);
+    else if (e.isFile()) out.push(rel);
+  }
+  return out;
+}
+
 function listFiles(stagedOnly) {
   const args = stagedOnly
     ? ["diff", "--cached", "--name-only", "--diff-filter=ACMR"]
     : ["ls-files"];
-  return execFileSync("git", args, { cwd: ROOT, encoding: "utf8" })
-    .split("\n").map((s) => s.trim()).filter(Boolean);
+  try {
+    return execFileSync("git", args, { cwd: ROOT, encoding: "utf8" })
+      .split("\n").map((s) => s.trim()).filter(Boolean);
+  } catch (e) {
+    const code = (e && e.code) || "未知";
+    console.log("⚠️  无法执行 git（" + code + "）—— 本应" +
+                (stagedOnly ? "只扫暂存集合" : "扫已跟踪文件") + "，现降级为**遍历 + .gitignore 过滤**。");
+    console.log("   降级原因：" + ((e && e.message) || e));
+    console.log("   ★ 过滤依据是 .gitignore（而不是 git 索引）⇒ 与『已跟踪』**近义但不全等**：");
+    console.log("     被 .gitignore 排除的文件不会扫（与 git 一致），");
+    console.log("     但**未跟踪且未被忽略**的新文件会扫（比 git 更严）。");
+    console.log("");
+    const files = walkFiles(ROOT);
+    console.log("   遍历得到 " + files.length + " 个文件。");
+    console.log("");
+    return files;
+  }
 }
 
 function main() {

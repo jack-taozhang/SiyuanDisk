@@ -165,32 +165,19 @@ if (typeof exp !== "function") {
     console.log("✅ onload 执行完成");
 
     // ────────────────────────────────────────────────────────────
-    // ★★ 关键回归：通道决策必须锁定「直连」，绝不能回退 127.0.0.1:6810 ★★
+    // ★★ 关键回归：所有请求必须打到网盘地址，绝不能出现 127.0.0.1:6810 ★★
     //
-    //   历史故障：探测 /healthz 时没带 Origin，Starlette 的 CORSMiddleware
-    //   只在有 Origin 时才回 ACAO ⇒ 探测读到 ACAO=(无) ⇒ 误判直连不可用
-    //   ⇒ 回退本地代理 ⇒ 浏览器端根本没有代理
-    //   ⇒ 满屏 `POST http://127.0.0.1:6810/… ERR_CONNECTION_REFUSED`。
+    //   历史故障：这里曾经有「探测直连 → 失败就回退本地代理」的分支，
+    //   而浏览器端思源根本没有代理进程，回退后满屏
+    //   `POST http://127.0.0.1:6810/… ERR_CONNECTION_REFUSED`。
+    //   现在内置代理已整体删除，**不存在第二条路** —— 这条回归改为
+    //   「断言唯一的基址就是 serverBase()」。
     // ────────────────────────────────────────────────────────────
     console.log("");
-    console.log("=== 通道决策回归 ===");
+    console.log("=== 通道回归（单一直连）===");
 
-    const boot = inst.boot;
-    if (!boot) { console.log("❌ 没有 boot 对象"); process.exit(1); }
-    console.log("  boot.noNode        =", boot.noNode);
-    console.log("  boot.mode          =", boot.mode);
-    console.log("  boot.status.ok     =", boot.status.ok, "| mode:", boot.status.mode);
-
-    if (boot.noNode !== true) {
-      console.log("❌ 浏览器端应判定 noNode=true");
-      process.exit(1);
-    }
-    if (boot.mode !== "direct") {
-      console.log("❌ 浏览器端 mode 应为 direct，实际: " + boot.mode);
-      process.exit(1);
-    }
-    if (boot.status.ok !== true) {
-      console.log("❌ 浏览器端 status.ok 应为 true（可用状态），实际: " + boot.status.ok);
+    if (inst.boot !== undefined && inst.boot !== null) {
+      console.log("❌ inst.boot 应已随内置代理一并删除，实际: " + typeof inst.boot);
       process.exit(1);
     }
 
@@ -200,20 +187,6 @@ if (typeof exp !== "function") {
     console.log("  api.currentKind()  =", kind);
     if (kind !== "direct") {
       console.log("❌ currentKind 必须是 direct（否则所有请求会打到 127.0.0.1:6810）");
-      process.exit(1);
-    }
-
-    // 即使会话缓存里塞了错误的 "proxy"，也必须强制纠正
-    const origSS = global.sessionStorage;
-    global.sessionStorage = {
-      getItem: () => JSON.stringify({ base: "http://192.168.193.70:8089", kind: "proxy" }),
-      setItem() {}, removeItem() {},
-    };
-    const kind2 = inst.api.currentKind();
-    console.log('  （缓存里塞了 "proxy" 后）currentKind =', kind2);
-    global.sessionStorage = origSS;
-    if (kind2 !== "direct") {
-      console.log("❌ 无 node 能力时必须无视错误的 proxy 缓存，强制 direct");
       process.exit(1);
     }
 

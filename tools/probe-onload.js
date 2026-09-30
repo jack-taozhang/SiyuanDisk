@@ -178,15 +178,15 @@ try {
   // 等异步代理启动
   await new Promise((r) => setTimeout(r, 2500));
 
-  const http = require("http");
-  const probe = await new Promise((res) => {
-    const rq = http.get({ host: "127.0.0.1", port: 6810, path: "/__ping", timeout: 1500 }, (rs) => {
-      let b = ""; rs.on("data", (c) => (b += c)); rs.on("end", () => res("HTTP " + rs.statusCode + " " + b.slice(0, 80)));
-    });
-    rq.on("error", (e) => res(e.code));
-    rq.on("timeout", () => { rq.destroy(); res("TIMEOUT"); });
-  });
-  console.log("\n 代理 6810 :", probe);
-  if (inst.proxy) console.log(" inst.proxy 端口:", inst.proxy.actualPort);
+  // 说明（2026-09-30）：这里原本探活本地转发代理 127.0.0.1:6810/__ping，
+  // 用来判断 onload 是否真的跑过。内置代理已整体删除，改为看诊断日志。
+  const diag = path.join(DIR, "..", "..", "temp", "nebuladisk.log");
+  try {
+    const tail = fs.existsSync(diag) ? fs.readFileSync(diag, "utf8").slice(-2000) : "";
+    const m = tail.match(/=== onload 开始[^\n]*/);
+    console.log("\n onload 记录 :", m ? m[0].trim() : "(诊断日志中没有)");
+  } catch (e) {
+    console.log("\n onload 记录 : 读取失败 " + e.message);
+  }
   process.exit(0);
 })();

@@ -21,14 +21,70 @@ const path = require("path");
 const http = require("http");
 const { execFileSync } = require("child_process");
 
-const EXE = "C:\\Program Files\\WindowsApps\\89C2A984.SiYuan_3.8.4.0_x64__1qfd3tsw4ngc2\\app\\SiYuan.exe";
-const LOG = "D:/Software/SiYuan/temp/siyuan.log";
+/**
+ * 思源工作区根目录。
+ *
+ * ★★ 2026-09-30 修正：下面 EXE / LOG 原来都**写死**了 ★★
+ *     · EXE = `…SiYuan_3.8.4.0_x64__…`   ← WindowsApps 目录名**带版本号**
+ *     · LOG = `D:/Software/SiYuan/temp/siyuan.log`  ← 那是个**旧工作区**
+ *   而本机真实工作区是 `E:/思源笔记`、思源已升到 3.8.6 ⇒ 两个常量同时失效。
+ *   要命的是失败点在**重启那一刻**才以「找不到可执行文件」冒出来，
+ *   很容易被当成"重启工具坏了"。
+ *
+ *   现在统一从 `<工作区>/conf/conf.json` 推导 —— 那是思源自己写的，
+ *   永远与当前版本一致；也允许用 SIYUAN_HOME 环境变量覆盖工作区。
+ */
+const SIYUAN_HOME = process.env.SIYUAN_HOME || "E:/思源笔记";
+
+/** 兜底路径：conf.json 读不到时才用（版本号可能过期，仅作最后手段） */
+const FALLBACK_EXE =
+  "C:\\Program Files\\WindowsApps\\89C2A984.SiYuan_3.8.6.0_x64__1qfd3tsw4ngc2\\app\\SiYuan.exe";
+
+/**
+ * 从 conf.json 的 `system.appDir` 反推可执行文件。
+ * appDir 形如 `…\app\resources` ⇒ SiYuan.exe 在它的上一级。
+ */
+function resolveExe() {
+  try {
+    const conf = JSON.parse(
+      fs.readFileSync(path.join(SIYUAN_HOME, "conf", "conf.json"), "utf8"),
+    );
+    const appDir = conf && conf.system && conf.system.appDir;
+    if (appDir) {
+      const p = path.join(appDir, "..", "SiYuan.exe");
+      if (fs.existsSync(p)) return p;
+    }
+  } catch { /* 落回兜底值 */ }
+  return FALLBACK_EXE;
+}
+
+const EXE = resolveExe();
+const LOG = path.join(SIYUAN_HOME, "temp", "siyuan.log");
+const DIAG = path.join(SIYUAN_HOME, "temp", "nebuladisk.log");
 const PLUGIN_NAME = "siyuan-nebuladisk";
 const PORT = 6806;
-const PROXY_PORT = 6810;
 const HOSTS = ["192.168.193.70", "127.0.0.1"];
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+/**
+ * onload() 有没有真的跑过。
+ *
+ * ★ 判据换过一次（2026-09-30）★
+ *   以前探本地转发代理 :6810/__ping —— 代理在 onload 里启动，连得上就说明跑过。
+ *   内置代理已整体删除，改为看插件诊断日志里有没有 `=== onload 开始 ===`。
+ */
+function probeOnload() {
+  try {
+    if (!fs.existsSync(DIAG)) return { up: false, code: "诊断日志不存在" };
+    const tail = fs.readFileSync(DIAG, "utf8").slice(-4000);
+    const m = tail.match(/=== onload 开始[^\n]*/);
+    if (!m) return { up: false, code: "日志里没有 onload 记录" };
+    return { up: true, status: m[0].trim() };
+  } catch (e) {
+    return { up: false, code: e.message };
+  }
+}
 
 /* ------------------------------------------------------------------ 进程 */
 
@@ -241,8 +297,8 @@ function readNewLog(mark) {
     }
   }
 
-  // 代理探活 —— onload() 真的跑过才会起 6810
-  const proxy = await probe("127.0.0.1", PROXY_PORT, "/__ping");
+  // onload 探活 —— 真的跑过才会往诊断日志写 `=== onload 开始 ===`
+  const probe = probeOnload();
 
   console.log("\n==================== 结果 ====================\n");
   if (petals) {
@@ -256,12 +312,12 @@ function readNewLog(mark) {
     console.log("⚠️  没等到新的 loaded petals（可能还在启动）。稍后跑 verify-install.js 复核。");
   }
 
-  if (proxy.up) {
-    console.log(`✅ 转发代理在线: 127.0.0.1:${PROXY_PORT} → HTTP ${proxy.status} ⇒ onload() 已执行`);
+  if (probe.up) {
+    console.log(`✅ 插件诊断日志有 onload 记录：${probe.status} ⇒ onload() 已执行`);
     console.log("\n👉 现在看思源：**右侧**边栏应该出现「NebulaDisk」图标");
     console.log("   （也可以在「插件」右键菜单里找 NebulaDisk）");
   } else {
-    console.log(`❌ 转发代理未响应 ⇒ onload() 没有执行`);
+    console.log(`❌ 诊断日志无 onload 记录（${probe.code}）⇒ onload() 没有执行`);
     console.log("   → 把浏览器开发者控制台（Ctrl+Shift+I）里以 `plugin siyuan-nebuladisk run error` 开头的报错发给我");
   }
   console.log();
